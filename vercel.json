@@ -2,22 +2,23 @@
   "version": 2,
   "builds": [
     {
+      "src": "addon/server.ts",
+      "use": "@vercel/node"
+    },
+    {
       "src": "package.json",
       "use": "@vercel/static-build",
       "config": {
         "distDir": "dist"
       }
-    },
-    {
-      "src": "addon/server.js",
-      "use": "@vercel/node"
     }
   ],
   "routes": [
     { "src": "^/configure/(.*)", "dest": "/$1" },
     { "src": "^/configure$", "dest": "/index.html" },
-    { "src": "^(.*)/manifest\\.json$", "dest": "/addon/server.js" },
-    { "src": "^(.*)/request_token$", "dest": "/addon/server.js" },
-    { "src": "/(.*)", "dest": "/addon/server.js" }
-  ]
+    { "src": "^(.*)/manifest\\.json$", "dest": "/addon/server.ts" },
+    { "src": "^(.*)/request_token$", "dest": "/addon/server.ts" },
+    { "src": "/(.*)", "dest": "/addon/server.ts" }
+  ],
+  "buildCommand": "npm run build:backend && npm run build"
 }
