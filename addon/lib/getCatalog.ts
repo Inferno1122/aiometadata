@@ -235,7 +235,7 @@ async function getTmdbAndMdbListCatalog(type: string, id: string, genre: string,
     logger.debug(`MDBList sorting - sort: ${sort}, order: ${order}`);
     
     // Convert genre title to slug format for MDBList API (using the mapping from API)
-    const { convertGenreToSlug } = await import('../utils/mdbList');
+    const { convertGenreToSlug } = await import('../utils/mdbList.ts');
     const genreSlug = convertGenreToSlug(genre);
     if (genreSlug !== genre) {
       logger.debug(`Converted genre "${genre}" to slug "${genreSlug}"`);
