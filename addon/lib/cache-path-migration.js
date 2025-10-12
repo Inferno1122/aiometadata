@@ -4,14 +4,24 @@ const { redis } = require('./getCache');
 
 /**
  * One-time migration to fix cache files after the path bug fix.
- * 
+ *
  * Background: Cache files were incorrectly written to /app/dist/data instead of /app/addon/data
  * due to using __dirname in compiled files. This caused cache files to be lost on restarts.
+ *
+ * This version automatically switches to /tmp/addon/data on Vercel (read-only filesystem elsewhere).
  */
 
 const MIGRATION_VERSION = 'cache-path-fix-v1';
 const MIGRATION_KEY = `migration:${MIGRATION_VERSION}`;
-const CACHE_DIR = path.join(process.cwd(), 'addon', 'data');
+
+// Detect Vercel environment (read-only FS except /tmp)
+const isVercel = !!process.env.VERCEL;
+
+// Choose writable cache dir
+const CACHE_DIR = isVercel
+  ? path.join('/tmp', 'addon', 'data')
+  : path.join(process.cwd(), 'addon', 'data');
+
 const MIGRATION_FLAG_FILE = path.join(CACHE_DIR, '.migration-completed');
 
 // Cache files that need migration
@@ -32,11 +42,23 @@ const ETAG_KEYS = [
   'wiki-mapper-movies-etag'
 ];
 
+async function ensureDirExists(dir) {
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+}
+
 async function runCachePathMigration() {
   console.log('[Cache Migration] Checking for cache path migration...');
+  console.log(`[Cache Migration] Using cache dir: ${CACHE_DIR}`);
 
   try {
-    // Check if migration already completed (via filesystem flag - primary check)
+    // Make sure cache dir exists (especially important for /tmp)
+    await ensureDirExists(CACHE_DIR);
+
+    // Check if migration already completed (via filesystem flag)
     try {
       const flagContent = await fs.readFile(MIGRATION_FLAG_FILE, 'utf-8');
       const flagData = JSON.parse(flagContent);
@@ -79,7 +101,7 @@ async function runCachePathMigration() {
       try {
         const stats = await fs.stat(filePath);
         filesFound = true;
-        
+
         // Delete the file (we'll force fresh downloads)
         await fs.unlink(filePath);
         filesDeleted++;
@@ -140,4 +162,3 @@ async function runCachePathMigration() {
 }
 
 module.exports = { runCachePathMigration };
-
