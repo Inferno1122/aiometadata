@@ -28,6 +28,7 @@ interface CustomManifest {
   name: string;
   description: string;
   catalogs: CustomCatalog[];
+  idPrefixes?: string[];
 }
 
 export function CustomManifestIntegration({ isOpen, onClose }: CustomManifestIntegrationProps) {
@@ -152,7 +153,10 @@ export function CustomManifestIntegration({ isOpen, onClose }: CustomManifestInt
               source: 'custom', // Use 'custom' source for custom manifests
               sourceUrl: catalogUrl, // Store the actual catalog URL
               genres: catalog.genres || [], // Store genres from manifest
-              manifestData: catalog, // Store full manifest data for advanced features
+              manifestData: { 
+                ...catalog, 
+                idPrefixes: manifest.idPrefixes // Store manifest idPrefixes for tun_ detection
+              },
               ...(displayType && { displayType }), // Include displayType if defined
             };
             newCatalogs.push(newCatalog);
@@ -219,6 +223,10 @@ export function CustomManifestIntegration({ isOpen, onClose }: CustomManifestInt
               </CardTitle>
               <CardDescription>
                 Enter any Stremio-compatible manifest URL to see available catalogs
+                <br />
+                <span className="text-xs text-muted-foreground mt-1">
+                  Supported ID prefixes: tmdb:, tt, tvdb:, mal:, tvmaze:, kitsu:, anidb:, anilist:, tvdbc:, tun_
+                </span>
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">

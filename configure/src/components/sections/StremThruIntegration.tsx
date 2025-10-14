@@ -28,6 +28,7 @@ interface StremThruManifest {
   name: string;
   description: string;
   catalogs: StremThruCatalog[];
+  idPrefixes?: string[];
 }
 
 export function StremThruIntegration({ isOpen, onClose }: StremThruIntegrationProps) {
@@ -155,7 +156,10 @@ export function StremThruIntegration({ isOpen, onClose }: StremThruIntegrationPr
               source: 'stremthru', // Keep source as the display label
               sourceUrl: catalogUrl, // Store the actual catalog URL
               genres: catalog.genres || [], // Store genres from manifest
-              manifestData: catalog, // Store full manifest data for advanced features
+              manifestData: { 
+                ...catalog, 
+                idPrefixes: manifest.idPrefixes // Store manifest idPrefixes for tun_ detection
+              },
               ...(displayType && { displayType }), // Include displayType if defined
             };
             newCatalogs.push(newCatalog);
@@ -226,6 +230,10 @@ export function StremThruIntegration({ isOpen, onClose }: StremThruIntegrationPr
               </CardTitle>
               <CardDescription>
                 Enter a StremThru manifest URL to see available catalogs
+                <br />
+                <span className="text-xs text-muted-foreground mt-1">
+                  Supported ID prefixes: tmdb:, tt, tvdb:, mal:, tvmaze:, kitsu:, anidb:, anilist:, tvdbc:, tun_
+                </span>
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
