@@ -1769,7 +1769,7 @@ async function parseAnimeCatalogMetaBatch(animes, config, language) {
     }
     if(config.mal?.useImdbIdForCatalogAndSearch && stremioType === 'series'){
       return (await cacheWrapMetaSmart(config.userUUID, id, async () => {
-        const { getMeta } = await import("../lib/getMeta");
+        const { getMeta } = await import("../lib/getMeta.js");
         return await getMeta(stremioType, language, `mal:${malId}`, config, config.userUUID, false);
       }, undefined, {enableErrorCaching: true, maxRetries: 2}, stremioType))?.meta || null;
     }
