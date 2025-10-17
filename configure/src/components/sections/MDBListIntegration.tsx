@@ -34,6 +34,7 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
   const [popularLists, setPopularLists] = useState<any[]>([]);
   const [selectedPopularLists, setSelectedPopularLists] = useState<Set<string>>(new Set());
   const [isLoadingPopularLists, setIsLoadingPopularLists] = useState(false);
+  const [userListSort, setUserListSort] = useState<'ranked' | 'name' | 'created'>('ranked');
 
   const popularUsers = [
     { username: 'tvgeniekodi', name: 'Mr. Professor', description: 'Curated TV and movie lists' },
@@ -50,7 +51,7 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
 
     setIsLoadingPopularLists(true);
     try {
-      const response = await fetch(`https://api.mdblist.com/lists/user/${username}?apikey=${tempKey}`);
+      const response = await fetch(`https://api.mdblist.com/lists/user/${username}?apikey=${tempKey}&sort=${userListSort}`);
       if (!response.ok) {
         if (response.status === 404) {
           throw new Error(`User "${username}" not found or has no public lists`);
@@ -63,14 +64,25 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
         throw new Error("Invalid response format from MDBList API");
       }
 
-      if (userLists.length === 0) {
+      let filteredLists = userLists;
+      
+      // For danaramapyjama, only include lists containing "wearers" in the name
+      if (username === 'danaramapyjama') {
+        filteredLists = userLists.filter((list: any) => 
+          list.name && list.name.toLowerCase().includes('wearers')
+        );
+      }
+
+      if (filteredLists.length === 0) {
         toast.info("No lists found", {
-          description: `User "${displayName}" has no public lists available`
+          description: username === 'danaramapyjama' 
+            ? `No "wearers" lists found for ${displayName}`
+            : `User "${displayName}" has no public lists available`
         });
         setPopularLists([]);
       } else {
         // Add user info to each list
-        const listsWithUser = userLists.map((list: any) => ({
+        const listsWithUser = filteredLists.map((list: any) => ({
           ...list,
           user: displayName,
           username: username,
@@ -81,7 +93,7 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
         setSelectedPopularLists(new Set());
         
         toast.success("Popular lists loaded", {
-          description: `Found ${userLists.length} list(s) from ${displayName}`
+          description: `Found ${filteredLists.length} list(s) from ${displayName}`
         });
       }
     } catch (error) {
@@ -118,7 +130,7 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
 
     setIsLoadingCustomUser(true);
     try {
-      const response = await fetch(`https://api.mdblist.com/lists/user/${customUsername.trim()}?apikey=${tempKey}`);
+      const response = await fetch(`https://api.mdblist.com/lists/user/${customUsername.trim()}?apikey=${tempKey}&sort=${userListSort}`);
       if (!response.ok) {
         if (response.status === 404) {
           throw new Error(`User "${customUsername}" not found or has no public lists`);
@@ -131,16 +143,27 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
         throw new Error("Invalid response format from MDBList API");
       }
 
-      if (userLists.length === 0) {
+      let filteredLists = userLists;
+      
+      // For danaramapyjama, only include lists containing "wearers" in the name
+      if (customUsername.trim().toLowerCase() === 'danaramapyjama') {
+        filteredLists = userLists.filter((list: any) => 
+          list.name && list.name.toLowerCase().includes('wearers')
+        );
+      }
+
+      if (filteredLists.length === 0) {
         toast.info("No lists found", {
-          description: `User "${customUsername}" has no public lists available`
+          description: customUsername.trim().toLowerCase() === 'danaramapyjama'
+            ? `No "wearers" lists found for ${customUsername}`
+            : `User "${customUsername}" has no public lists available`
         });
         setCustomUserLists([]);
       } else {
-        setCustomUserLists(userLists);
+        setCustomUserLists(filteredLists);
         setSelectedCustomLists(new Set());
         toast.success("User lists loaded", {
-          description: `Found ${userLists.length} list(s) from ${customUsername}`
+          description: `Found ${filteredLists.length} list(s) from ${customUsername}`
         });
       }
     } catch (error) {
@@ -645,6 +668,24 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
               </CardHeader>
               <CardContent className="space-y-4">
               
+              {/* Sort selector for user lists */}
+              <div className="space-y-2">
+                <Label htmlFor="user-list-sort">Sort User Lists By</Label>
+                <Select value={userListSort} onValueChange={(value: 'ranked' | 'name' | 'created') => setUserListSort(value)}>
+                  <SelectTrigger id="user-list-sort" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ranked">Ranked (Default)</SelectItem>
+                    <SelectItem value="name">Name</SelectItem>
+                    <SelectItem value="created">Date Created</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  This affects how lists are sorted when browsing any user's lists
+                </p>
+              </div>
+              
               <div className="flex items-center space-x-2">
                 <Input 
                   placeholder="Enter MDBList username (e.g., tvgeniekodi)" 
@@ -773,6 +814,24 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
+                
+                {/* Sort selector (shared with custom user lists) */}
+                <div className="space-y-2">
+                  <Label htmlFor="user-list-sort-popular">Sort User Lists By</Label>
+                  <Select value={userListSort} onValueChange={(value: 'ranked' | 'name' | 'created') => setUserListSort(value)}>
+                    <SelectTrigger id="user-list-sort-popular" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ranked">Ranked (Default)</SelectItem>
+                      <SelectItem value="name">Name</SelectItem>
+                      <SelectItem value="created">Date Created</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    This affects how lists are sorted when browsing curator lists
+                  </p>
+                </div>
                 
                 {/* Individual Curator Buttons */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
