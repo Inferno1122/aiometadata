@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +20,7 @@ interface SavedConfig {
 }
 
 export function ConfigurationManager({ children }: ConfigurationManagerProps) {
-  const { config, auth, setAuth } = useConfig();
+  const { config, auth, setAuth, hasBuiltInTvdb, hasBuiltInTmdb, isLoading: contextLoading } = useConfig();
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -74,7 +74,13 @@ export function ConfigurationManager({ children }: ConfigurationManagerProps) {
   }, [savedConfig?.userUUID]);
 
   const validateRequiredKeys = () => {
-    const requiredKeys = ['tmdb', 'tvdb'];
+    // Don't validate until context is loaded
+    if (contextLoading) {
+      return { valid: true };
+    }
+    
+    
+    const requiredKeys = ['tmdb'];
     
     // Check if fanart is selected in any art provider (handles both legacy and new formats)
     const isFanartSelected = (() => {
@@ -103,7 +109,14 @@ export function ConfigurationManager({ children }: ConfigurationManagerProps) {
     if (isFanartSelected && !requiredKeys.includes('fanart')) {
       requiredKeys.push('fanart');
     }
-    const missingKeys = requiredKeys.filter(key => !config.apiKeys?.[key] || config.apiKeys[key].trim() === '');
+    const missingKeys = requiredKeys.filter(key => {
+      if (key === 'tmdb') {
+        // TMDB is required unless there's a built-in key
+        const hasUserKey = config.apiKeys.tmdb?.trim();
+        return !hasUserKey && !hasBuiltInTmdb;
+      }
+      return !config.apiKeys?.[key] || config.apiKeys[key].trim() === '';
+    });
     if (missingKeys.length > 0) {
       return {
         valid: false,
@@ -236,7 +249,7 @@ export function ConfigurationManager({ children }: ConfigurationManagerProps) {
     }
   };
 
-  const validation = validateRequiredKeys();
+  const validation = useMemo(() => validateRequiredKeys(), [config, hasBuiltInTmdb, hasBuiltInTvdb, contextLoading]);
 
   return (
     <div className="space-y-6">
@@ -252,40 +265,150 @@ export function ConfigurationManager({ children }: ConfigurationManagerProps) {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">
-            <Label>Required API Keys</Label>
+            <Label>API Keys Status</Label>
             <div className="space-y-2">
-              {['tmdb', 'tvdb'].map(key => (
-                <div key={key} className="flex items-center gap-2">
-                  {config.apiKeys?.[key] ? (
-                    <CheckCircle className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <AlertCircle className="h-4 w-4 text-red-500" />
-                  )}
-                  <span className="text-sm font-medium">{key.toUpperCase()}</span>
-                  {config.apiKeys?.[key] ? (
-                    <span className="text-sm text-green-600">✓ Configured</span>
-                  ) : (
-                    <span className="text-sm text-red-600">✗ Missing</span>
-                  )}
-                </div>
-              ))}
+              {[
+                { key: 'tmdb', name: 'TMDB' },
+                { key: 'tvdb', name: 'TVDB' },
+                { key: 'mdblist', name: 'MDBList' },
+                { key: 'fanart', name: 'Fanart' }
+              ].map(({ key, name }) => {
+                const hasUserKey = config.apiKeys?.[key]?.trim();
+                const hasBuiltInKey = key === 'tmdb' ? hasBuiltInTmdb : (key === 'tvdb' ? hasBuiltInTvdb : false);
+                const isConfigured = hasUserKey || hasBuiltInKey;
+                
+                // Check if this key is actually being used
+                const isInUse = (() => {
+                  if (key === 'tmdb') return true; // Always required
+                  if (key === 'tvdb') {
+                    // Check if TVDB is used in providers or art providers
+                    const isTvdbInProviders = 
+                      config.providers?.movie === 'tvdb' ||
+                      config.providers?.series === 'tvdb' ||
+                      config.providers?.anime === 'tvdb';
+                    
+                    const isTvdbInArt = ['movie', 'series', 'anime'].some(contentType => {
+                      const provider = config.artProviders?.[contentType];
+                      if (typeof provider === 'string') {
+                        return provider === 'tvdb';
+                      }
+                      if (typeof provider === 'object' && provider !== null) {
+                        return provider.poster === 'tvdb' || 
+                               provider.background === 'tvdb' || 
+                               provider.logo === 'tvdb';
+                      }
+                      return false;
+                    });
+                    
+                    return isTvdbInProviders || isTvdbInArt;
+                  }
+                  if (key === 'mdblist') {
+                    // Check if MDBList is used in catalogs
+                    return config.catalogs?.some(c => c.id.startsWith('mdblist.'));
+                  }
+                  if (key === 'fanart') {
+                    // Check if fanart is used in art providers
+                    const artProviders = config.artProviders;
+                    if (!artProviders) return false;
+                    
+                    return ['movie', 'series', 'anime'].some(contentType => {
+                      const provider = artProviders[contentType];
+                      if (typeof provider === 'string') {
+                        return provider === 'fanart';
+                      }
+                      if (typeof provider === 'object' && provider !== null) {
+                        return provider.poster === 'fanart' || 
+                               provider.background === 'fanart' || 
+                               provider.logo === 'fanart';
+                      }
+                      return false;
+                    });
+                  }
+                  return false;
+                })();
+                
+                const isRequired = key === 'tmdb' || isInUse;
+                
+                return (
+                  <div key={key} className="flex items-center justify-between py-2 border-b border-gray-200 last:border-b-0">
+                    <div className="flex items-center gap-3">
+                      {isConfigured ? (
+                        <CheckCircle className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <AlertCircle className="h-4 w-4 text-red-500" />
+                      )}
+                      <div>
+                        <span className="text-sm font-medium">{name}</span>
+                        <span className="text-xs text-gray-500 ml-2">
+                          {isRequired ? 'Required' : 'Optional'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-sm">
+                      {isConfigured ? (
+                        <span className="text-green-600 font-medium">Configured</span>
+                      ) : (
+                        <span className="text-red-600 font-medium">Missing</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          <div className="flex justify-between items-center">
-            <div>
-              {!validation.valid && (
-                <p className="text-sm text-red-600">
-                  Please configure all required API keys before saving
-                </p>
-              )}
-            </div>
-            <Dialog open={!auth.authenticated && showPasswordDialog} onOpenChange={setShowPasswordDialog}>
+          <div className="space-y-3">
+            {!validation.valid && (
+              <p className="text-sm text-red-600">
+                Please configure all required API keys before saving
+              </p>
+            )}
+            {error && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-md">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 text-red-500" />
+                  <span className="text-sm text-red-700">{error}</span>
+                </div>
+              </div>
+            )}
+            <div className="flex justify-end">
+              <Dialog open={!auth.authenticated && showPasswordDialog} onOpenChange={setShowPasswordDialog}>
               <Button
                 disabled={!validation.valid || isLoading}
                 className="flex items-center gap-2"
                 onClick={() => {
                   if (!validation.valid || isLoading) return;
+                  
+                  setError("");
+                  
+                  // Check if TVDB is being used anywhere
+                  const isTvdbInProviders = 
+                    config.providers?.movie === 'tvdb' ||
+                    config.providers?.series === 'tvdb' ||
+                    config.providers?.anime === 'tvdb';
+                  
+                  const isTvdbInArt = ['movie', 'series', 'anime'].some(contentType => {
+                    const provider = config.artProviders?.[contentType];
+                    if (typeof provider === 'string') {
+                      return provider === 'tvdb';
+                    }
+                    if (typeof provider === 'object' && provider !== null) {
+                      return provider.poster === 'tvdb' || 
+                             provider.background === 'tvdb' || 
+                             provider.logo === 'tvdb';
+                    }
+                    return false;
+                  });
+                  
+                  // Only validate TVDB key if TVDB is actually being used
+                  if (isTvdbInProviders || isTvdbInArt) {
+                    const hasTvdbKey = !!config.apiKeys?.tvdb?.trim() || hasBuiltInTvdb;
+                    if (!hasTvdbKey) {
+                      setError("TVDB is selected as a provider but no TVDB API key is configured. Please add your TVDB API key in the Integrations tab or choose a different provider.");
+                      return;
+                    }
+                  }
+                  
                   if (auth.authenticated) {
                     void handleSaveConfiguration();
                   } else {
@@ -403,6 +526,7 @@ export function ConfigurationManager({ children }: ConfigurationManagerProps) {
                 </div>
               </DialogContent>
             </Dialog>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -17,6 +17,9 @@ interface ConfigContextType {
   resetConfig: () => Promise<void>;
   auth: AuthState;
   setAuth: React.Dispatch<React.SetStateAction<AuthState>>;
+  hasBuiltInTvdb: boolean;
+  hasBuiltInTmdb: boolean;
+  isLoading: boolean;
 }
 
 const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
@@ -90,7 +93,7 @@ const initialConfig: AppConfig = {
   artProviders: { 
     movie: { poster: 'meta', background: 'meta', logo: 'meta' },
     series: { poster: 'meta', background: 'meta', logo: 'meta' },
-    anime: { poster: 'tvdb', background: 'tvdb', logo: 'tvdb' },
+    anime: { poster: 'meta', background: 'imdb', logo: 'imdb' },
     englishArtOnly: false
   },
   tvdbSeasonType: 'default',
@@ -240,6 +243,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     return initialConfig;
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [hasBuiltInTvdb, setHasBuiltInTvdb] = useState(false);
+  const [hasBuiltInTmdb, setHasBuiltInTmdb] = useState(false);
 
   // --- THIS IS THE CORRECTED EFFECT ---
   useEffect(() => {
@@ -250,6 +255,8 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         if (!isMounted) return;
         const envApiKeys = await envResponse.json();
         setAddonVersion(envApiKeys.addonVersion || ' ');
+        setHasBuiltInTvdb(!!envApiKeys.hasBuiltInTvdb);
+        setHasBuiltInTmdb(!!envApiKeys.hasBuiltInTmdb);
 
         // Layer in the server keys with the correct priority.
         // We use `preloadedConfig` because it holds the user's saved data.
@@ -294,7 +301,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <ConfigContext.Provider value={{ config, setConfig, addonVersion, resetConfig, auth, setAuth }}>
+    <ConfigContext.Provider value={{ config, setConfig, addonVersion, resetConfig, auth, setAuth, hasBuiltInTvdb, hasBuiltInTmdb, isLoading }}>
       {children}
     </ConfigContext.Provider>
   );

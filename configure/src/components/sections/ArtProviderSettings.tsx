@@ -22,14 +22,33 @@ const seriesArtProviders = [
 const animeArtProviders = [
   { value: 'mal', label: 'MyAnimeList' },
   { value: 'anilist', label: 'AniList' },
-  { value: 'tvdb', label: 'TheTVDB (Recommended)' },
+  { value: 'tvdb', label: 'TheTVDB' },
   { value: 'tmdb', label: 'The Movie Database (TMDB)' },
   { value: 'fanart', label: 'Fanart.tv' },
   { value: 'imdb', label: 'Internet Movie Database (IMDB)' },
 ];
 
+const animeBackgroundArtProviders = [
+  { value: 'mal', label: 'MyAnimeList' },
+  { value: 'anilist', label: 'AniList' },
+  { value: 'tvdb', label: 'TheTVDB' },
+  { value: 'tmdb', label: 'The Movie Database (TMDB)' },
+  { value: 'fanart', label: 'Fanart.tv' },
+  { value: 'imdb', label: 'Internet Movie Database (IMDB) (Recommended)' },
+];
+
+const animeLogoArtProviders = [
+  { value: 'mal', label: 'MyAnimeList' },
+  { value: 'anilist', label: 'AniList' },
+  { value: 'tvdb', label: 'TheTVDB' },
+  { value: 'tmdb', label: 'The Movie Database (TMDB)' },
+  { value: 'fanart', label: 'Fanart.tv' },
+  { value: 'imdb', label: 'Internet Movie Database (IMDB) (Recommended)' },
+];
+
 export function ArtProviderSettings() {
-  const { config, setConfig } = useConfig();
+  const { config, setConfig, hasBuiltInTvdb } = useConfig();
+  const hasTvdbKey = !!config.apiKeys?.tvdb?.trim() || hasBuiltInTvdb;
 
   const handleArtProviderChange = (
     contentType: 'movie' | 'series' | 'anime',
@@ -72,14 +91,20 @@ export function ArtProviderSettings() {
 
   const hasFanartKey = config.apiKeys.fanart && config.apiKeys.fanart.trim() !== '';
 
-  const getArtProviders = (contentType: 'movie' | 'series' | 'anime') => {
+  const getArtProviders = (contentType: 'movie' | 'series' | 'anime', artType: 'poster' | 'background' | 'logo') => {
     switch (contentType) {
       case 'movie':
         return movieArtProviders;
       case 'series':
         return seriesArtProviders;
       case 'anime':
-        return animeArtProviders;
+        if (artType === 'background') {
+          return animeBackgroundArtProviders;
+        } else if (artType === 'logo') {
+          return animeLogoArtProviders;
+        } else {
+          return animeArtProviders;
+        }
       default:
         return [];
     }
@@ -167,8 +192,8 @@ export function ArtProviderSettings() {
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
                   {movieArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -192,8 +217,8 @@ export function ArtProviderSettings() {
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
                   {movieArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -217,8 +242,8 @@ export function ArtProviderSettings() {
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
                   {movieArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -248,8 +273,8 @@ export function ArtProviderSettings() {
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
                   {seriesArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -273,8 +298,8 @@ export function ArtProviderSettings() {
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
                   {seriesArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -298,8 +323,8 @@ export function ArtProviderSettings() {
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
                   {seriesArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -352,9 +377,9 @@ export function ArtProviderSettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
-                  {animeArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                  {getArtProviders('anime', 'poster').map(p => (
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -377,9 +402,9 @@ export function ArtProviderSettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
-                  {animeArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                  {getArtProviders('anime', 'background').map(p => (
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -402,9 +427,9 @@ export function ArtProviderSettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="meta">Meta Provider (default)</SelectItem>
-                  {animeArtProviders.map(p => (
-                    <SelectItem key={p.value} value={p.value}>
-                      {p.label}
+                  {getArtProviders('anime', 'logo').map(p => (
+                    <SelectItem key={p.value} value={p.value} disabled={p.value === 'tvdb' && !hasTvdbKey}>
+                      {p.label}{p.value === 'tvdb' && !hasTvdbKey && ' (API key required)'}
                     </SelectItem>
                   ))}
                 </SelectContent>

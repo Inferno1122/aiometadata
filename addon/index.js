@@ -76,19 +76,23 @@ if (ENABLE_CACHE_WARMING && !NO_CACHE) {
   // Schedule periodic warming (non-blocking)
   scheduleEssentialWarming(CACHE_WARMING_INTERVAL);
   
-  // Schedule popular content warming (runs every 6 hours in the background)
-  consola.info('[Cache Warming] Scheduling popular content warming (every 6 hours)');
-  setInterval(async () => {
-    consola.info('[Cache Warming] Running scheduled popular content warming...');
-    await warmPopularContent().catch(error => {
-      consola.warn('[Cache Warming] Popular content warming failed:', error.message);
-    });
-  }, 6 * 60 * 60 * 1000); // 6 hours
+  // Schedule popular content warming based on CACHE_WARM_INTERVAL_HOURS env (default 24h)
+  const POPULAR_WARM_INTERVAL_HOURS = parseInt(process.env.CACHE_WARM_INTERVAL_HOURS || '24', 10);
+  const POPULAR_WARM_CHECK_INTERVAL = 15 * 60 * 1000; // Check every 15 minutes
   
-  // Run initial popular content warming in background (don't block startup)
+  consola.info(`[Cache Warming] Scheduling popular content warming (interval: ${POPULAR_WARM_INTERVAL_HOURS}h, check every 15min)`);
+  
+  // Check immediately on startup
   warmPopularContent().catch(error => {
-    consola.warn('[Cache Warming] Initial popular content warming failed:', error.message);
+    consola.warn('[Cache Warming] Initial popular content warming check failed:', error.message);
   });
+  
+  // Then check periodically (the function itself will decide if warming is needed)
+  setInterval(async () => {
+    await warmPopularContent().catch(error => {
+      consola.warn('[Cache Warming] Popular content warming check failed:', error.message);
+    });
+  }, POPULAR_WARM_CHECK_INTERVAL);
 } else {
   consola.info('[Cache Warming] Cache warming disabled or cache disabled');
 }
@@ -148,6 +152,8 @@ const respond = function (req, res, data, opts) {
           includeAdult: req.userConfig.includeAdult,
           ageRating: req.userConfig.ageRating,
           hideUnreleasedDigital: req.userConfig.hideUnreleasedDigital,
+          exclusionKeywords: req.userConfig.exclusionKeywords,
+          regexExclusionFilter: req.userConfig.regexExclusionFilter,
           showMetaProviderAttribution: req.userConfig.showMetaProviderAttribution,
           apiKeys: { 
             rpdb: req.userConfig.apiKeys?.rpdb || process.env.RPDB_API_KEY || '',
@@ -251,6 +257,8 @@ addon.get("/api/config", (req, res) => {
     gemini: process.env.GEMINI_API_KEY || "",
     customDescriptionBlurb: process.env.CUSTOM_DESCRIPTION_BLURB || "",
     addonVersion: ADDON_VERSION,
+    hasBuiltInTvdb: !!(process.env.BUILT_IN_TVDB_API_KEY),
+    hasBuiltInTmdb: !!(process.env.BUILT_IN_TMDB_API_KEY),
   };
   
   res.json(publicEnvConfig);
@@ -769,18 +777,36 @@ addon.get("/stremio/:userUUID/meta/:type/:id.json", async function (req, res) {
     } else if (result && result.meta) {
       // cache wrap the ratings
       if(result.meta.mal_id) {
-        const ratings = await cacheWrapGlobal(`mdblist-ratings:mal:${type}:${result.meta.mal_id}`, async () => {
-            return await getMediaRatingFromMDBList('mal', type === 'movie' ? 'movie' : type === 'series' ? 'show' : 'any', result.meta.mal_id, config.apiKeys?.mdblist);
-          }, 7 * 24 * 60 * 60); // 7 days TTL
-        result.meta.app_extras = result.meta.app_extras || {};
-        result.meta.app_extras.ratings = ratings;
+        try {
+          const ratings = await cacheWrapGlobal(`mdblist-ratings:mal:${type}:${result.meta.mal_id}`, async () => {
+              return await getMediaRatingFromMDBList('mal', type === 'movie' ? 'movie' : type === 'series' ? 'show' : 'any', result.meta.mal_id, config.apiKeys?.mdblist);
+            }, 7 * 24 * 60 * 60); // 7 days TTL
+          result.meta.app_extras = result.meta.app_extras || {};
+          result.meta.app_extras.ratings = ratings;
+        } catch (error) {
+          // Skip MDBList ratings if rate limited (429) or any other error
+          if (error.response?.status === 429) {
+            console.warn(`[MDBList] Rate limited for MAL ID ${result.meta.mal_id}, skipping ratings`);
+          } else {
+            console.warn(`[MDBList] Error fetching ratings for MAL ID ${result.meta.mal_id}:`, error.message);
+          }
+        }
       }
       else if(result.meta.imdb_id) {
-        const ratings = await cacheWrapGlobal(`mdblist-ratings:imdb:${type}:${result.meta.imdb_id}`, async () => {
-            return await getMediaRatingFromMDBList('imdb', type === 'movie' ? 'movie' : type === 'series' ? 'show' : 'any', result.meta.imdb_id, config.apiKeys?.mdblist);
-          }, 7 * 24 * 60 * 60); // 7 days TTL
-        result.meta.app_extras = result.meta.app_extras || {};
-        result.meta.app_extras.ratings = ratings;
+        try {
+          const ratings = await cacheWrapGlobal(`mdblist-ratings:imdb:${type}:${result.meta.imdb_id}`, async () => {
+              return await getMediaRatingFromMDBList('imdb', type === 'movie' ? 'movie' : type === 'series' ? 'show' : 'any', result.meta.imdb_id, config.apiKeys?.mdblist);
+            }, 7 * 24 * 60 * 60); // 7 days TTL
+          result.meta.app_extras = result.meta.app_extras || {};
+          result.meta.app_extras.ratings = ratings;
+        } catch (error) {
+          // Skip MDBList ratings if rate limited (429) or any other error
+          if (error.response?.status === 429) {
+            console.warn(`[MDBList] Rate limited for IMDb ID ${result.meta.imdb_id}, skipping ratings`);
+          } else {
+            console.warn(`[MDBList] Error fetching ratings for IMDb ID ${result.meta.imdb_id}:`, error.message);
+          }
+        }
       }
     }
     
@@ -1657,6 +1683,18 @@ addon.get("/api/dashboard/users", (req, res) => {
   } catch (error) {
     console.error('[Dashboard API] Error:', error);
     res.status(500).json({ error: 'Failed to fetch user data' });
+  }
+});
+
+// MAL Catalog Warmup Stats endpoint
+addon.get("/api/dashboard/mal-warmup", (req, res) => {
+  try {
+    const { getWarmupStats } = require('./lib/malCatalogWarmer');
+    const stats = getWarmupStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('[MAL Warmer API] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch MAL warmup stats' });
   }
 });
 

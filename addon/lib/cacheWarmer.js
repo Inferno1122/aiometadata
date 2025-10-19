@@ -76,18 +76,43 @@ async function warmEssentialContent() {
 async function ensureSystemConfig() {
   const database = require('./database');
   const crypto = require('crypto');
-  const systemUUID = 'system-cache-warmer';
+  const systemUUID = process.env.CACHE_WARMUP_UUID || 'system-cache-warmer';
+  const systemPasswordHash = crypto.createHash('sha256').update('system-internal').digest('hex');
   
   try {
     // Check if system config already exists
     const existingConfig = await database.getUserConfig(systemUUID);
     if (existingConfig) {
+      // Only auto-update if using the default system config (not a user's custom UUID)
+      const isSystemConfig = systemUUID === 'system-cache-warmer';
+      if (isSystemConfig) {
+        let configUpdated = false;
+        
+        // Update anime art providers if they're outdated (tvdb -> mal/imdb)
+        if (existingConfig.artProviders?.anime?.poster === 'tvdb') {
+          logger.info('[System Config] Updating anime art providers to use MAL posters and IMDb backgrounds/logos');
+          existingConfig.artProviders.anime = { poster: 'mal', background: 'imdb', logo: 'imdb' };
+          configUpdated = true;
+        }
+        
+        // Update language if env variable changed
+        const envLanguage = process.env.CACHE_WARM_LANGUAGE || 'en-US';
+        if (existingConfig.language !== envLanguage) {
+          logger.info(`[System Config] Updating cache warming language from ${existingConfig.language} to ${envLanguage}`);
+          existingConfig.language = envLanguage;
+          configUpdated = true;
+        }
+        
+        if (configUpdated) {
+          await database.saveUserConfig(systemUUID, systemPasswordHash, existingConfig);
+        }
+      }
       return systemUUID;
     }
     
     // Create default system config
     const systemConfig = {
-      language: 'en-US',
+      language: process.env.CACHE_WARM_LANGUAGE || 'en-US',
       includeAdult: false,
       blurThumbs: false,
       showPrefix: false,
@@ -105,7 +130,7 @@ async function ensureSystemConfig() {
       artProviders: { 
         movie: { poster: 'meta', background: 'meta', logo: 'meta' },
         series: { poster: 'meta', background: 'meta', logo: 'meta' },
-        anime: { poster: 'tvdb', background: 'tvdb', logo: 'tvdb' },
+        anime: { poster: 'mal', background: 'imdb', logo: 'imdb' },
         englishArtOnly: false
       },
       tvdbSeasonType: 'default',
@@ -136,9 +161,6 @@ async function ensureSystemConfig() {
       streaming: []
     };
     
-    // Use a system password hash (not used for authentication, just for database consistency)
-    const systemPasswordHash = crypto.createHash('sha256').update('system-internal').digest('hex');
-    
     await database.saveUserConfig(systemUUID, systemPasswordHash, systemConfig);
     await database.trustUUID(systemUUID);
     
@@ -151,11 +173,66 @@ async function ensureSystemConfig() {
 }
 
 /**
+ * Check if popular content warming is needed based on interval
+ */
+async function shouldWarmPopularContent() {
+  const redis = require('./redisClient');
+  const WARM_INTERVAL_MS = parseInt(process.env.CACHE_WARM_INTERVAL_HOURS || '24', 10) * 60 * 60 * 1000; // Default 24h
+  
+  try {
+    const lastWarmKey = 'cache-warming:last-popular-warm';
+    const lastWarm = await redis.get(lastWarmKey);
+    
+    if (!lastWarm) {
+      return true; // Never warmed before
+    }
+    
+    const lastWarmTime = parseInt(lastWarm, 10);
+    const timeSinceLastWarm = Date.now() - lastWarmTime;
+    
+    if (timeSinceLastWarm >= WARM_INTERVAL_MS) {
+      logger.info(`[Cache Warming] ${Math.round(timeSinceLastWarm / 1000 / 60 / 60)}h since last popular warming (threshold: ${WARM_INTERVAL_MS / 1000 / 60 / 60}h)`);
+      return true;
+    }
+    
+    logger.info(`[Cache Warming] Popular content was warmed ${Math.round(timeSinceLastWarm / 1000 / 60)}min ago, skipping (next in ${Math.round((WARM_INTERVAL_MS - timeSinceLastWarm) / 1000 / 60)}min)`);
+    return false;
+  } catch (error) {
+    logger.warn('[Cache Warming] Failed to check warming interval, proceeding with warming:', error.message);
+    return true; // Warm on error to be safe
+  }
+}
+
+/**
+ * Mark popular content as warmed
+ */
+async function markPopularContentWarmed() {
+  const redis = require('./redisClient');
+  try {
+    const lastWarmKey = 'cache-warming:last-popular-warm';
+    await redis.set(lastWarmKey, Date.now().toString());
+  } catch (error) {
+    logger.warn('[Cache Warming] Failed to mark warming timestamp:', error.message);
+  }
+}
+
+/**
  * Warm related content based on popular items
  */
-async function warmPopularContent() {
+async function warmPopularContent(force = false) {
   try {
-    const builtInApiKey = process.env.TMDB_API || process.env.BUILT_IN_TMDB_API_KEY;
+    // Check if popular warming is disabled
+    if (process.env.TMDB_POPULAR_WARMING_ENABLED === 'false') {
+      logger.debug('[Cache Warming] TMDB popular content warming is disabled');
+      return;
+    }
+    
+    // Check if warming is needed
+    if (!force && !(await shouldWarmPopularContent())) {
+      return;
+    }
+    
+    const builtInApiKey = /*process.env.TMDB_API ||*/ process.env.BUILT_IN_TMDB_API_KEY;
     if (!builtInApiKey) {
       logger.warn('[Cache Warming] BUILT_IN_TMDB_API_KEY not set, skipping popular content warming');
       return;
@@ -189,7 +266,7 @@ async function warmPopularContent() {
               const stremioId = `tmdb:${movie.id}`;
               await cacheWrapMetaSmart(systemUUID, stremioId, async () => {
                 const { getMeta } = require('./getMeta.js');
-                return await getMeta('movie', 'en-US', stremioId, warmingConfig, systemUUID, false);
+                return await getMeta('movie', warmingConfig.language, stremioId, warmingConfig, systemUUID, false);
               }, undefined, { enableErrorCaching: false, maxRetries: 1 }, 'movie', false);
               totalWarmed++;
             } catch (err) {
@@ -216,7 +293,7 @@ async function warmPopularContent() {
               const stremioId = `tmdb:${series.id}`;
               await cacheWrapMetaSmart(systemUUID, stremioId, async () => {
                 const { getMeta } = require('./getMeta.js');
-                return await getMeta('series', 'en-US', stremioId, warmingConfig, systemUUID, false);
+                return await getMeta('series', warmingConfig.language, stremioId, warmingConfig, systemUUID, false);
               }, undefined, { enableErrorCaching: false, maxRetries: 1 }, 'series', false);
               totalWarmed++;
             } catch (err) {
@@ -230,6 +307,9 @@ async function warmPopularContent() {
     }
     
     logger.success(`[Cache Warming] Popular content warming completed (${totalWarmed} items cached)`);
+    
+    // Mark warming as complete
+    await markPopularContentWarmed();
   } catch (error) {
     logger.error('[Cache Warming] Error warming popular content:', error.message);
   }

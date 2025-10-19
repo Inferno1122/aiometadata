@@ -351,21 +351,49 @@ async function resolveAllIds(stremioId, type, config, prefetchedIds = {}, target
 
     const cachedMapping = await redisIdCache.getCachedIdMapping(type, allIds.tmdbId, allIds.tvdbId, allIds.imdbId, allIds.tvmazeId);
     if (cachedMapping) {
-      performanceStats.cacheEarlyReturns++;
       logger.debug(` Found cached mapping for ${stremioId}`);
       allIds.tmdbId = allIds.tmdbId || cachedMapping.tmdb_id;
       allIds.tvdbId = allIds.tvdbId || cachedMapping.tvdb_id;
       allIds.imdbId = allIds.imdbId || cachedMapping.imdb_id;
       allIds.tvmazeId = allIds.tvmazeId || cachedMapping.tvmaze_id;
-      const duration = Date.now() - startTime;
-      await timingMetrics.recordTiming('id_resolution_cache', duration, { 
-        type, 
-        stremioId,
-        cached: true,
-        resolution_type: 'cache_hit'
-      });
-      logger.success(` Cache hit resolution complete for ${stremioId} (took ${duration}ms)`);
-      return allIds;
+      
+      // Check if we have all target providers - if so, return early
+      if (targetProviders.length > 0) {
+        const hasAllTargets = targetProviders.every(provider => {
+          switch (provider) {
+            case 'imdb': return allIds.imdbId;
+            case 'tvdb': return allIds.tvdbId;
+            case 'tmdb': return allIds.tmdbId;
+            case 'tvmaze': return allIds.tvmazeId;
+            default: return false;
+          }
+        });
+        
+        if (hasAllTargets) {
+          performanceStats.cacheEarlyReturns++;
+          const duration = Date.now() - startTime;
+          await timingMetrics.recordTiming('id_resolution_cache', duration, { 
+            type, 
+            stremioId,
+            cached: true,
+            resolution_type: 'cache_hit'
+          });
+          logger.success(` Cache hit provided all target providers for ${stremioId} (took ${duration}ms)`);
+          return allIds;
+        }
+      } else {
+        // If no target providers specified, return cache hit immediately
+        performanceStats.cacheEarlyReturns++;
+        const duration = Date.now() - startTime;
+        await timingMetrics.recordTiming('id_resolution_cache', duration, { 
+          type, 
+          stremioId,
+          cached: true,
+          resolution_type: 'cache_hit'
+        });
+        logger.success(` Cache hit resolution complete for ${stremioId} (took ${duration}ms)`);
+        return allIds;
+      }
     }
     logger.debug(` No cache hit for ${stremioId}, proceeding to API lookups.`);
   }
@@ -565,8 +593,38 @@ async function resolveAllIds(stremioId, type, config, prefetchedIds = {}, target
                     return { tvmazeId: null };
                 })
         );
-    } else if (!allIds.tvmazeId && allIds.imdbId && type === 'series' && !shouldCallTvmaze) {
-        logger.debug(`[Secondary API] Skipping TVMaze lookup - not in targetProviders: [${targetProviders.join(', ')}]`);
+    } else if (!allIds.tvmazeId && allIds.tvdbId && type === 'series' && shouldCallTvmaze) {
+        const tvmazeFindTvdbStartTime = Date.now();
+        logger.debug(`[Secondary API] TVMaze lookup requested - targetProviders: [${targetProviders.join(', ')}]`);
+        secondaryPromises.push(
+            tvmaze.getShowByTvdbId(allIds.tvdbId)
+                .then(res => {
+                    const duration = Date.now() - tvmazeFindTvdbStartTime;
+                    const tvmazeId = res?.id || null;
+                    secondaryTimings.push({
+                        operation: 'tvmaze_find_by_tvdb',
+                        duration,
+                        success: !!tvmazeId,
+                        provider: 'tvmaze',
+                        sourceId: allIds.tvdbId,
+                        type
+                    });
+                    return { tvmazeId };
+                })
+                .catch(error => {
+                    const duration = Date.now() - tvmazeFindTvdbStartTime;
+                    secondaryTimings.push({
+                        operation: 'tvmaze_find_by_tvdb',
+                        duration,
+                        success: false,
+                        provider: 'tvmaze',
+                        sourceId: allIds.tvdbId,
+                        type,
+                        error: error.message
+                    });
+                    return { tvmazeId: null };
+                })
+        );
     }
 
     if (secondaryPromises.length > 0) {

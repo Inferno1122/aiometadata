@@ -51,7 +51,6 @@ services:
       - META_TTL=604800
       - CATALOG_TTL=86400
       - CATALOG_LIST_ITEMS_SIZE=20
-      - NO_CACHE=false
       - LOG_LEVEL=debug
       - ADMIN_KEY=${ADMIN_KEY?}
       - TMDB_SOCKS_PROXY_URL=${TMDB_SOCKS_PROXY_URL?}
@@ -123,6 +122,15 @@ DOCKER_DATA_DIR=/opt/docker
 # This helps improve performance by pre-caching frequently accessed items
 BUILT_IN_TMDB_API_KEY=your_dedicated_tmdb_api_key
 BUILT_IN_TVDB_API_KEY=your_dedicated_tmdb_api_key
+
+# Cache warming interval in hours (default: 24)
+# Controls how often popular content is re-cached
+CACHE_WARM_INTERVAL_HOURS=24
+
+# Cache warming language (default: en-US)
+# Language to use when warming popular content cache
+# Examples: en-US, fr-FR, de-DE, es-ES, ja-JP, pt-BR
+CACHE_WARM_LANGUAGE=en-US
 ```
 
 Then run:
