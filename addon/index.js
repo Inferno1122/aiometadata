@@ -261,6 +261,8 @@ addon.get("/api/config", (req, res) => {
     hasBuiltInTmdb: !!(process.env.BUILT_IN_TMDB_API_KEY),
   };
   
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  
   res.json(publicEnvConfig);
 });
 
@@ -1073,6 +1075,8 @@ addon.get("/dashboard/", (req, res) => {
 });
 
 addon.get('/api/config/addon-info', (req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=300');
+
   res.json({
     requiresAddonPassword: !!process.env.ADDON_PASSWORD,
     addonVersion: ADDON_VERSION
@@ -1400,6 +1404,22 @@ function getDashboardAPI() {
   return dashboardApiInstance;
 }
 
+// Middleware to prevent caching on dynamic, instance-specific routes
+const noCache = (req, res, next) => {
+  // Instructs not to store the response in any cache.
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  // For older HTTP/1.0 caches.
+  res.setHeader('Pragma', 'no-cache');
+  // Tells proxies the response is immediately stale.
+  res.setHeader('Expires', '0');
+  next();
+};
+
+// Apply the no-cache middleware to all dashboard and dashboard API routes
+addon.use('/dashboard', noCache);
+addon.use('/api/dashboard', noCache);
+
+
 addon.get("/api/dashboard/overview", (req, res) => {
   
   try {
@@ -1550,6 +1570,32 @@ addon.post("/api/dashboard/cache/clear", (req, res) => {
   } catch (error) {
     console.error('[Dashboard API] Error:', error);
     res.status(500).json({ error: 'Failed to clear cache' });
+  }
+});
+
+addon.post("/api/dashboard/users/clear", (req, res) => {
+  const adminKey = process.env.ADMIN_KEY;
+  if (adminKey && req.headers['x-admin-key'] !== adminKey) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  try {
+    const dashboardApi = getDashboardAPI();
+    
+    // Call the new method to clear inflated user data
+    if (dashboardApi.requestTracker && dashboardApi.requestTracker.clearActiveUserData) {
+      dashboardApi.requestTracker.clearActiveUserData()
+        .then(result => res.json(result))
+        .catch(error => {
+          console.error('[Dashboard API] User data clear error:', error);
+          res.status(500).json({ error: 'Failed to clear user data' });
+        });
+    } else {
+      res.status(500).json({ error: 'Request tracker not available' });
+    }
+  } catch (error) {
+    console.error('[Dashboard API] Error:', error);
+    res.status(500).json({ error: 'Failed to clear user data' });
   }
 });
 
