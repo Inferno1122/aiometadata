@@ -1,33 +1,41 @@
 require("dotenv").config();
 import * as moviedb from "./getTmdb.js";
 import * as Utils from '../utils/parseProps.js';
-import { resolveAllIds } from './id-resolver.js';
 import { getMeta } from './getMeta.js';
 import { cacheWrapMetaSmart } from './getCache.js';
 import { UserConfig } from '../types/index.js';
 import { isReleasedDigitally } from "../utils/parseProps.js";
 import { filterMetasByRegex } from "../utils/regexFilter.js";
+const consola = require('consola');
 
-const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
-
-const host = process.env.HOST_NAME?.startsWith('http')
-    ? process.env.HOST_NAME
-    : `https://${process.env.HOST_NAME}`;
+const logger = consola.create({ 
+  level: process.env.LOG_LEVEL ? 
+    (consola.LogLevels[process.env.LOG_LEVEL.toLowerCase()] ?? 4) : 
+    (process.env.NODE_ENV === 'production' ? 3 : 4),
+  fancy: true,
+  colors: true,
+  formatOptions: {
+    colors: true,
+    compact: false,
+    date: false
+  },
+  tag: 'GetTrending'
+}); 
 
 async function getTrending(type: string, language: string, page: number, genre: string, config: UserConfig, userUUID: string): Promise<{ metas: any[] }> {
   const startTime = performance.now();
   try {
-    console.log(`[getTrending] Fetching trending for type=${type}, language=${language}, page=${page}, genre=${genre}`);
+    logger.debug(`[getTrending] Fetching trending for type=${type}, language=${language}, page=${page}, genre=${genre}`);
     const media_type = type === "series" ? "tv" : type;
     const time_window = genre && ['day', 'week'].includes(genre.toLowerCase()) ? genre.toLowerCase() : "day";
     
     const parameters = { media_type, time_window, language, page };
-    //const genreList = await getGenreList(language, type);
     
     const tmdbStartTime = performance.now();
     const res: any = await moviedb.trending(parameters, config);
     const tmdbTime = performance.now() - tmdbStartTime;
-    console.log(`[getTrending] TMDB trending fetch took ${tmdbTime.toFixed(2)}ms`);
+    logger.debug(`[getTrending] TMDB trending fetch took ${tmdbTime.toFixed(2)}ms`);
+    
     const metasStartTime = performance.now();
     let preferredProvider;
     if (type === 'movie') {
@@ -58,13 +66,11 @@ async function getTrending(type: string, language: string, page: number, genre: 
     }));
     const metasTime = performance.now() - metasStartTime;
     const validMetas = metas.filter(meta => meta !== null);
-    console.log(`[getTrending] ${validMetas.length} Metas processing took ${metasTime.toFixed(2)}ms`);
-
+    logger.debug(`[getTrending] ${validMetas.length} Metas processing took ${metasTime.toFixed(2)}ms`);
 
     const movieRatingHierarchy = ['G', 'PG', 'PG-13', 'R', 'NC-17'];
     const tvRatingHierarchy = ["TV-Y", "TV-Y7", "TV-G", "TV-PG", "TV-14", "TV-MA"];
     
-    // Pre-compute rating mappings and indices for performance
     const movieToTvMap: { [key: string]: string } = {
       'G': 'TV-G',
       'PG': 'TV-PG', 
@@ -81,30 +87,42 @@ async function getTrending(type: string, language: string, page: number, genre: 
       const finalUserRating = isTvRating ? (movieToTvMap[userRating] || userRating) : userRating;
       const ratingHierarchy = isTvRating ? tvRatingHierarchy : movieRatingHierarchy;
       const userRatingIndex = ratingHierarchy.indexOf(finalUserRating);
-      const filterStartTime = performance.now();
-      filteredMetas = metas.filter(meta => {
+
+      if (userRatingIndex !== -1) {
+        const beforeCount = filteredMetas.length;
+        const filterStartTime = performance.now();
         
-        if (!meta.certification) {
-          return true;
-        }
-        
-        const resultRatingIndex = ratingHierarchy.indexOf(meta.certification);
-        if (userRatingIndex !== -1 && resultRatingIndex !== -1) {
+        filteredMetas = validMetas.filter(meta => {
+          const cert = meta.app_extras?.certification;
+          
+          // If rating is PG-13 or lower, exclude items without certification as they could be inappropriate
+          const isUserRatingRestrictive = finalUserRating === 'PG-13' || 
+                                         (movieRatingHierarchy.indexOf(finalUserRating) !== -1 && 
+                                          movieRatingHierarchy.indexOf(finalUserRating) <= movieRatingHierarchy.indexOf('PG-13')) ||
+                                         (tvRatingHierarchy.indexOf(finalUserRating) !== -1 && 
+                                          tvRatingHierarchy.indexOf(finalUserRating) <= tvRatingHierarchy.indexOf('TV-14'));
+          
+          if (!cert || cert === "" || cert.toLowerCase() === 'nr') {
+            return !isUserRatingRestrictive; // Exclude items without certification if user rating is restrictive
+          }
+          
+          const resultRatingIndex = ratingHierarchy.indexOf(cert);
+
+          if (resultRatingIndex === -1) {
+            return true;
+          }
+          
           return resultRatingIndex <= userRatingIndex;
+        });
+
+        const afterCount = filteredMetas.length;
+        const filterTime = performance.now() - filterStartTime;
+        if (beforeCount !== afterCount) {
+          logger.debug(`[getTrending] Age rating filter removed ${beforeCount - afterCount} items in ${filterTime.toFixed(2)}ms`);
         }
-        
-        // If result rating is not in hierarchy (like NR), filter it out when age filtering is enabled
-        if (resultRatingIndex === -1) {
-          return false;
-        }
-        
-        return true;
-      });
-      
-      const filterTime = performance.now() - filterStartTime;
-      console.log(`[getTrending] ${filteredMetas.length} Age rating filtering took ${filterTime.toFixed(2)}ms`);
+      }
     } else {
-      console.log(`[getTrending] No age rating filtering applied (ageRating: ${userRating})`);
+      logger.debug(`[getTrending] No age rating filtering applied (ageRating: ${userRating})`);
     }
 
     // Apply digital release filter if enabled (movies only)
@@ -113,7 +131,7 @@ async function getTrending(type: string, language: string, page: number, genre: 
       filteredMetas = filteredMetas.filter(meta => isReleasedDigitally(meta));
       const afterCount = filteredMetas.length;
       if (beforeCount !== afterCount) {
-        console.log(`Digital release filter: filtered out ${beforeCount - afterCount} unreleased movies`);
+        logger.debug(`Digital release filter: filtered out ${beforeCount - afterCount} unreleased movies`);
       }
     }
     
@@ -123,12 +141,12 @@ async function getTrending(type: string, language: string, page: number, genre: 
       filteredMetas = filterMetasByRegex(filteredMetas, config.exclusionKeywords || '', config.regexExclusionFilter || '');
       const afterCount = filteredMetas.length;
       if (beforeCount !== afterCount) {
-        console.log(`[getTrending] Content filter excluded ${beforeCount - afterCount} trending items`);
+        logger.debug(`[getTrending] Content filter excluded ${beforeCount - afterCount} trending items`);
       }
     }
     
     const totalTime = performance.now() - startTime;
-    console.log(`[getTrending] Total function execution took ${totalTime.toFixed(2)}ms`);
+    logger.debug(`[getTrending] Total function execution took ${totalTime.toFixed(2)}ms`);
     
     return { metas: filteredMetas };
 
