@@ -261,6 +261,21 @@ async function performKitsuSearch(type, query, language, config, page = 1) {
 
 
 
+/**
+ * Normalizes a string for comparison by removing accents, diacritics, and converting to lowercase
+ * @param {string} str - The string to normalize
+ * @returns {string} - The normalized string
+ */
+function normalizeForComparison(str) {
+  if (!str) return '';
+  return str
+    .toLowerCase()
+    .normalize('NFD') // Decompose combined characters
+    .replace(/[\u0300-\u036f]/g, '') // Remove diacritics
+    .replace(/[^\w\s]/g, '') // Remove special characters except word chars and spaces
+    .trim();
+}
+
 async function performTmdbSearch(type, query, language, config, searchPersons = true, page = 1) {
   const startTime = Date.now();
   const rawResults = new Map();
@@ -302,15 +317,38 @@ async function performTmdbSearch(type, query, language, config, searchPersons = 
                 
                 logger.debug(`Person found: ${topPerson.name} (popularity: ${topPerson.popularity || 0})`);
                 
-                const personName = topPerson.name.toLowerCase();
-                const queryLower = query.toLowerCase();
-                const isExactMatch = personName === queryLower;
-                const isContainedWithPopularity = personName.includes(queryLower) && (topPerson.popularity || 0) > 3;
+                // Fetch full person details to get also_known_as names
+                const personDetails = await moviedb.personInfo({ id: topPerson.id, language }, config);
                 
-                if (!isExactMatch && !isContainedWithPopularity) {
-                  logger.debug(`Skipping person ${topPerson.name} - not exact match and doesn't meet popularity threshold (${topPerson.popularity || 0} <= 3)`);
+                const queryNormalized = normalizeForComparison(query);
+                const personNameNormalized = normalizeForComparison(topPerson.name);
+                const alsoKnownAs = personDetails.also_known_as || [];
+                
+                // Check if query matches the primary name
+                const isExactMatch = personNameNormalized === queryNormalized;
+                const isContainedWithPopularity = personNameNormalized.includes(queryNormalized) && (topPerson.popularity || 0) > 3;
+                
+                // Check if query matches any of the also_known_as names
+                // Aliases must ALWAYS pass the popularity check (no bypass for exact matches)
+                const matchesAlsoKnownAs = alsoKnownAs.some(aka => {
+                  const akaNormalized = normalizeForComparison(aka);
+                  const isMatch = akaNormalized === queryNormalized || akaNormalized.includes(queryNormalized);
+                  
+                  if (!isMatch) return false;
+                  
+                  // For alias matches, ALWAYS require minimum popularity
+                  // This prevents low-popularity people with famous aliases (e.g., "Superman") from hijacking searches
+                  const minPopularityForAlias = 3.0;
+                  return (topPerson.popularity || 0) >= minPopularityForAlias;
+                });
+                
+                if (!isExactMatch && !isContainedWithPopularity && !matchesAlsoKnownAs) {
+                  logger.debug(`Skipping person ${topPerson.name} - query "${query}" doesn't match name or also_known_as (${alsoKnownAs.join(', ')}) with sufficient popularity (${topPerson.popularity || 0} < 3.0)`);
                   return [];
                 }
+                
+                logger.debug(`Person match confirmed: ${topPerson.name} (also known as: ${alsoKnownAs.join(', ')})`);
+                
                 const credits = type === 'movie'
                     ? await moviedb.personMovieCredits({ id: topPerson.id, language }, config)
                     : await moviedb.personTvCredits({ id: topPerson.id, language }, config);
@@ -323,10 +361,12 @@ async function performTmdbSearch(type, query, language, config, searchPersons = 
   ]);
 
   // Add all found items to our raw results map, tagging them by source
-  titleRes.results.forEach(media => {
-      media.matchType = 'title'; // Tag as a direct title match
-      addRawResult(media);
-  });
+  if (titleRes?.results) {
+    titleRes.results.forEach(media => {
+        media.matchType = 'title'; // Tag as a direct title match
+        addRawResult(media);
+    });
+  }
   personCredits.forEach(media => {
       media.matchType = 'person'; // Tag as a match from a person's filmography
       addRawResult(media);
@@ -366,10 +406,11 @@ async function performTmdbSearch(type, query, language, config, searchPersons = 
           || details.images?.backdrops?.find(b => b.iso_639_1 === language.split('-')[0])
           || details.images?.backdrops?.[0];
         const selectedLogo = Utils.selectTmdbImageByLang(details.images?.logos, config);
+        const selectedPoster = Utils.selectTmdbImageByLang(details.images?.posters, config);
         const fallbackImage = `${host}/missing_poster.png`;
         logoUrl = selectedLogo?.file_path ? `https://image.tmdb.org/t/p/original${selectedLogo?.file_path}` : null;
         backgroundUrl = selectedBg?.file_path ? `https://image.tmdb.org/t/p/original${selectedBg?.file_path}` : null;
-        posterUrl = media.poster_path ? `${TMDB_IMAGE_BASE}${media.poster_path}` : fallbackImage;
+        posterUrl = selectedPoster?.file_path ? `https://image.tmdb.org/t/p/original${selectedPoster?.file_path}` : fallbackImage;
 
         // OPTIMIZATION: Fetch poster, rating, logo, and resolve final stremio ID in parallel
         const imdbRating = allIds.imdbId ? await getImdbRating(allIds.imdbId, mediaType) : null;
@@ -820,7 +861,7 @@ async function performTvmazeSearch(query, language, config) {
   }*/
   
   const tmdbResults = await moviedb.searchTv({ query: query, language }, config);
-  if (tmdbResults.results.length > 0) {
+  if (tmdbResults?.results?.length > 0) {
     const topTmdbResult = tmdbResults.results[0];
     const tmdbInfo = await moviedb.tvInfo({ id: topTmdbResult.id, append_to_response: 'external_ids' });
     const imdbId = tmdbInfo.external_ids?.imdb_id;

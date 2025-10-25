@@ -1,6 +1,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Header } from './components/layout/Header';
 import { SettingsLayout } from './components/SettingsLayout';
+import { ChangelogModal } from './components/ChangelogBox';
 import { ConfigProvider } from './contexts/ConfigContext';
 import { AdminProvider } from './contexts/AdminContext';
 import { Toaster } from "@/components/ui/sonner";
@@ -16,7 +17,7 @@ function AppContent() {
       {/* Custom Description Blurb - Outside main card */}
       {config.apiKeys.customDescriptionBlurb && (
         <div 
-          className="mb-6 p-4 bg-muted/50 border rounded-lg w-full max-w-5xl"
+          className="mb-6 p-4 bg-black border rounded-lg w-full max-w-5xl"
           dangerouslySetInnerHTML={{ __html: config.apiKeys.customDescriptionBlurb }}
         />
       )}

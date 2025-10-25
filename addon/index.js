@@ -453,6 +453,30 @@ addon.get("/session_id", async function (req, res) { const s = await getSessionI
 
 
 
+// --- Basic Manifest Route ---
+addon.get("/stremio/manifest.json", function (req, res) {
+  const host = process.env.HOST_NAME.startsWith('http')
+    ? process.env.HOST_NAME
+    : `https://${process.env.HOST_NAME}`;
+    const basicManifest = {
+        id: "com.aio.metadata",
+        version: packageJson.version,
+        name: "AIO Metadata",
+        description: "A metadata addon for power users. AIOMetadata uses TMDB, TVDB, TVMaze, MyAnimeList, IMDB and Fanart.tv to provide accurate data for movies, series, and anime. You choose the source.",
+        favicon: `${host}/favicon.png`,
+        logo: `${host}/logo.png`,
+        types: ["movie", "series"],
+        catalogs: [],
+        resources: [],
+        idPrefixes: [],
+        configurationRequired: true
+    };
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.json(basicManifest);
+});
+
 // --- Database-Only Manifest Route ---
 addon.get("/stremio/:userUUID/manifest.json", async function (req, res) {
     const { userUUID } = req.params;
@@ -575,7 +599,7 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
         let metas = [];
         const { genre: genreName, type_filter,  skip } = extraArgs;
         const pageSize = id.includes(`mal.`) ? 25 : 
-                         (id.startsWith('stremthru.') || id.startsWith('mdblist.')) ? 
+                         (id.startsWith('stremthru.') || id.startsWith('mdblist.') || id.startsWith('custom.')) ? 
                          parseInt(process.env.CATALOG_LIST_ITEMS_SIZE || '20') : 20;
         const page = skip ? Math.floor(parseInt(skip) / pageSize) + 1 : 1;
         const args = [actualType, language, page];
@@ -620,26 +644,40 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
               'mal.20sDecade': ['2020-01-01', '2029-12-31'],
             };
             if (id === 'mal.airing') {
-              const animeResults = await jikan.getAiringNow(page, config);
+              const animeResults = await cacheWrapJikanApi(`mal-airing-${page}-${config.sfw}`, async () => {
+                return await jikan.getAiringNow(page, config);
+              });
               metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             } else if (id === 'mal.upcoming') {
-              const animeResults = await jikan.getUpcoming(page, config);
+              const animeResults = await cacheWrapJikanApi(`mal-upcoming-${page}-${config.sfw}`, async () => {
+                return await jikan.getUpcoming(page, config);
+              });
               metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             } else if (id === 'mal.top_movies') {
-              const animeResults = await jikan.getTopAnimeByType('movie', page, config);
+              const animeResults = await cacheWrapJikanApi(`mal-top-movies-${page}-${config.sfw}`, async () => {
+                return await jikan.getTopAnimeByType('movie', page, config);
+              });
               metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             } else if (id === 'mal.top_series') {
-              const animeResults = await jikan.getTopAnimeByType('tv', page, config);
+              const animeResults = await cacheWrapJikanApi(`mal-top-series-${page}-${config.sfw}`, async () => {
+                return await jikan.getTopAnimeByType('tv', page, config);
+              });
               metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             } else if (id === 'mal.most_popular') {
               console.log(`[CATALOG ROUTE 2] mal.most_popular called with type=${actualType}, language=${language}, page=${page}`);
-              const animeResults = await jikan.getTopAnimeByFilter('bypopularity', page, config);
+              const animeResults = await cacheWrapJikanApi(`mal-most-popular-${page}-${config.sfw}`, async () => {
+                return await jikan.getTopAnimeByFilter('bypopularity', page, config);
+              });
               metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             } else if (id === 'mal.most_favorites') {
-              const animeResults = await jikan.getTopAnimeByFilter('favorite', page, config);
+              const animeResults = await cacheWrapJikanApi(`mal-most-favorites-${page}-${config.sfw}`, async () => {
+                return await jikan.getTopAnimeByFilter('favorite', page, config);
+              });
               metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             } else if (id === 'mal.top_anime') {
-              const animeResults = await jikan.getTopAnimeByType('anime', page, config);
+              const animeResults = await cacheWrapJikanApi(`mal-top-anime-${page}-${config.sfw}`, async () => {
+                return await jikan.getTopAnimeByType('anime', page, config);
+              });
               metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             } else {
             const [startDate, endDate] = decadeMap[id];
@@ -652,7 +690,9 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
               const selectedGenre = allAnimeGenres.find(g => g.name === genreNameToFetch);
               if (selectedGenre) {
                 const genreId = selectedGenre.mal_id;
-                    const animeResults = await jikan.getTopAnimeByDateRange(startDate, endDate, page, genreId, config);
+                    const animeResults = await cacheWrapJikanApi(`mal-${id}-${page}-${genreId}-${config.sfw}`, async () => {
+                  return await jikan.getTopAnimeByDateRange(startDate, endDate, page, genreId, config);
+                });
                     metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
                 }
               }
@@ -671,7 +711,9 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
               const selectedGenre = allAnimeGenres.find(g => g.name === genreNameToFetch);
               if (selectedGenre) {
                 const genreId = selectedGenre.mal_id;
-                const animeResults = await jikan.getAnimeByGenre(genreId, mediaType, page, config);
+                const animeResults = await cacheWrapJikanApi(`mal-genre-${genreId}-${mediaType}-${page}-${config.sfw}`, async () => {
+                  return await jikan.getAnimeByGenre(genreId, mediaType, page, config);
+                });
                 metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
               }
             }
@@ -689,7 +731,9 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
         
                 if (selectedStudio) {
                     const studioId = selectedStudio.mal_id;
-                    const animeResults = await jikan.getAnimeByStudio(studioId, page);
+                    const animeResults = await cacheWrapJikanApi(`mal-studio-${studioId}-${page}-${config.sfw}`, async () => {
+                      return await jikan.getAnimeByStudio(studioId, page);
+                    });
                     metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
                 } else {
                     console.warn(`[Catalog] Could not find a MAL ID for studio name: ${genreName}`);
@@ -699,7 +743,9 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
           }
           case 'mal.schedule': {
             const dayOfWeek = genreName || 'Monday';
-            const animeResults = await jikan.getAiringSchedule(dayOfWeek, page, config);
+            const animeResults = await cacheWrapJikanApi(`mal-schedule-${dayOfWeek}-${page}-${config.sfw}`, async () => {
+              return await jikan.getAiringSchedule(dayOfWeek, page, config);
+            });
             metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             break;
           }
@@ -725,7 +771,9 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
             const parts = seasonString.split(' ');
             const season = parts[0].toLowerCase(); // winter, spring, summer, fall
             const year = parseInt(parts[1]);
-            const animeResults = await jikan.getAnimeBySeason(year, season, page, config);
+            const animeResults = await cacheWrapJikanApi(`mal-season-${year}-${season}-${page}-${config.sfw}`, async () => {
+              return await jikan.getAnimeBySeason(year, season, page, config);
+            });
             metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
             break;
           }
@@ -1872,6 +1920,164 @@ addon.get("/api/dashboard/catalog-warmup", (req, res) => {
   } catch (error) {
     console.error('[Catalog Warmer API] Error:', error);
     res.status(500).json({ error: 'Failed to fetch catalog warmup stats' });
+  }
+});
+
+// Comprehensive Warming Dashboard - combines all warming systems
+addon.get("/api/dashboard/warming", (req, res) => {
+  try {
+    // Get stats from all warming systems
+    const { getWarmupStats: getMALStats } = require('./lib/malCatalogWarmer');
+    const { getWarmupStats: getCatalogStats } = require('./lib/comprehensiveCatalogWarmer');
+    const { getWarmupStats: getEssentialStats } = require('./lib/cacheWarmer');
+    
+    const malStats = getMALStats();
+    const catalogStats = getCatalogStats();
+    const essentialStats = getEssentialStats();
+    
+    // Get current environment configuration
+    const config = {
+      mode: process.env.CACHE_WARMUP_MODE || 'essential',
+      uuid: process.env.CACHE_WARMUP_UUID || 'system-cache-warmer',
+      malEnabled: process.env.MAL_WARMUP_ENABLED !== 'false',
+      tmdbPopularEnabled: process.env.TMDB_POPULAR_WARMING_ENABLED !== 'false',
+      catalogInterval: parseInt(process.env.CATALOG_WARMUP_INTERVAL_HOURS) || 24,
+      malInterval: parseInt(process.env.MAL_WARMUP_INTERVAL_HOURS) || 6,
+    };
+    
+    res.json({
+      config,
+      systems: {
+        essential: essentialStats,
+        mal: malStats,
+        comprehensive: catalogStats
+      },
+      overall: {
+        isAnyRunning: malStats.isWarming || catalogStats.isRunning || essentialStats.isWarming,
+        lastRun: Math.max(
+          malStats.lastRun || 0,
+          catalogStats.lastRun || 0,
+          essentialStats.lastRun || 0
+        ),
+        totalItems: (malStats.totalItems || 0) + (catalogStats.totalItems || 0) + (essentialStats.totalItems || 0)
+      }
+    });
+  } catch (error) {
+    console.error('[Warming Dashboard API] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch warming dashboard data' });
+  }
+});
+
+// Warming Control Endpoints
+addon.post("/api/dashboard/warming/control", (req, res) => {
+  const adminKey = process.env.ADMIN_KEY;
+  if (adminKey && req.headers['x-admin-key'] !== adminKey) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  try {
+    const { action, system } = req.body;
+    
+    if (!action || !system) {
+      return res.status(400).json({ error: 'Action and system are required' });
+    }
+    
+    let result = { success: false, message: '' };
+    
+    switch (system) {
+      case 'mal':
+        if (action === 'start') {
+          const { startMALWarmup } = require('./lib/malCatalogWarmer');
+          startMALWarmup();
+          result = { success: true, message: 'MAL warming started' };
+        } else if (action === 'stop') {
+          // MAL warmer doesn't have a stop method, but we can log it
+          result = { success: true, message: 'MAL warming will stop after current task' };
+        }
+        break;
+        
+      case 'comprehensive':
+        if (action === 'start') {
+          const { startComprehensiveCatalogWarming } = require('./lib/comprehensiveCatalogWarmer');
+          startComprehensiveCatalogWarming();
+          result = { success: true, message: 'Comprehensive warming started' };
+        } else if (action === 'stop') {
+          // Comprehensive warmer doesn't have a stop method, but we can log it
+          result = { success: true, message: 'Comprehensive warming will stop after current task' };
+        }
+        break;
+        
+      case 'essential':
+        if (action === 'start') {
+          const { warmEssentialContent } = require('./lib/cacheWarmer');
+          warmEssentialContent();
+          result = { success: true, message: 'Essential warming started' };
+        } else if (action === 'stop') {
+          result = { success: true, message: 'Essential warming will stop after current task' };
+        }
+        break;
+        
+      default:
+        return res.status(400).json({ error: 'Invalid system specified' });
+    }
+    
+    res.json(result);
+  } catch (error) {
+    console.error('[Warming Control API] Error:', error);
+    res.status(500).json({ error: 'Failed to control warming system' });
+  }
+});
+
+// Maintenance Task Execution endpoint
+addon.post("/api/dashboard/maintenance/execute", (req, res) => {
+  const adminKey = process.env.ADMIN_KEY;
+  if (adminKey && req.headers['x-admin-key'] !== adminKey) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  try {
+    const { taskId, action } = req.body;
+    
+    if (!taskId || !action) {
+      return res.status(400).json({ error: 'Task ID and action are required' });
+    }
+    
+    let result = { success: false, message: '' };
+    
+    // Handle warming tasks
+    if (taskId === 7) { // Essential Cache Warming
+      if (action === 'restart' || action === 'enable') {
+        const { warmEssentialContent } = require('./lib/cacheWarmer');
+        warmEssentialContent();
+        result = { success: true, message: 'Essential cache warming started' };
+      } else if (action === 'stop') {
+        result = { success: true, message: 'Essential warming will stop after current task' };
+      }
+    } else if (taskId === 8) { // MAL Catalog Warming
+      if (action === 'restart' || action === 'enable') {
+        const { startMALWarmup } = require('./lib/malCatalogWarmer');
+        startMALWarmup();
+        result = { success: true, message: 'MAL catalog warming started' };
+      } else if (action === 'stop') {
+        result = { success: true, message: 'MAL warming will stop after current task' };
+      }
+    } else if (taskId === 9) { // Comprehensive Catalog Warming
+      if (action === 'restart' || action === 'enable') {
+        const { forceRestartWarmup } = require('./lib/comprehensiveCatalogWarmer');
+        forceRestartWarmup();
+        result = { success: true, message: 'Comprehensive catalog warming started (force restart)' };
+      } else if (action === 'stop') {
+        result = { success: true, message: 'Comprehensive warming will stop after current task' };
+      }
+    } else {
+      // Handle other maintenance tasks (cache cleanup, etc.)
+      result = { success: false, message: 'Task execution not implemented yet' };
+    }
+    
+    res.json(result);
+  } catch (error) {
+    console.error('[Maintenance Task API] Error:', error);
+    res.status(500).json({ error: 'Failed to execute maintenance task' });
   }
 });
 

@@ -239,7 +239,7 @@ async function warmPopularContent(force = false) {
       return;
     }
     
-    const builtInApiKey = /*process.env.TMDB_API ||*/ process.env.BUILT_IN_TMDB_API_KEY;
+    const builtInApiKey = process.env.TMDB_API || process.env.BUILT_IN_TMDB_API_KEY;
     if (!builtInApiKey) {
       logger.warn('[Cache Warming] BUILT_IN_TMDB_API_KEY not set, skipping popular content warming');
       return;
@@ -374,11 +374,26 @@ function isInitialWarmingComplete() {
 
 
 
+/**
+ * Get warming stats for dashboard
+ */
+function getWarmupStats() {
+  return {
+    enabled: process.env.MAL_WARMUP_ENABLED !== 'false',
+    isWarming: false, // Essential warming is typically quick and not tracked
+    lastRun: null, // Could be enhanced to track this
+    totalItems: 0, // Could be enhanced to track this
+    mode: process.env.CACHE_WARMUP_MODE || 'essential',
+    tmdbPopularEnabled: process.env.TMDB_POPULAR_WARMING_ENABLED !== 'false'
+  };
+}
+
 module.exports = {
   warmEssentialContent,
   warmPopularContent,
   warmFromUserActivity,
   scheduleEssentialWarming,
   isInitialWarmingComplete,
+  getWarmupStats,
   WARMING_STRATEGIES
 };

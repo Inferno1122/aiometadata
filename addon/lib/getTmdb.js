@@ -130,7 +130,7 @@ async function makeTmdbRequest(endpoint, apiKey, params = {}, method = 'GET', bo
       const isSeriesDetailEndpoint = endpoint.match(/^\/tv\/(\d+)$/);
       const type = isMovieDetailEndpoint ? 'movie' : isSeriesDetailEndpoint ? 'series' : null;
       let nameToImdbTitle = data.original_title || data.title;
-      if (!data.imdb_id && currentTmdbId && type) {
+      if (!data.imdb_id && currentTmdbId && type && data.release_date) {
           const startTime = Date.now();
           if (data.translations) {
             consola.debug('Processing translations for:', data.original_title || data.title);
@@ -146,14 +146,15 @@ async function makeTmdbRequest(endpoint, apiKey, params = {}, method = 'GET', bo
               {
                 name: nameToImdbTitle || "",
                 type: type,
-                year: data.release_date ? data.release_date.substring(0, 4) : ""
+                year: data.release_date.substring(0, 4),
+                strict: true
               },
               (err, result) => {
                 if (err) {
                   console.warn(`[TMDB] Failed to get IMDB ID for season name "${nameToImdbTitle}":`, err);
                   resolve(null);
                 } else {
-                  console.log(`[TMDB] IMDB ID for season name "${nameToImdbTitle}":`, result);
+                  console.log(`[TMDB] IMDB ID found for name "${nameToImdbTitle} and year "${data.release_date ? data.release_date.substring(0, 4) : ""}":`, result);
                   resolve(result);
                 }
               }
@@ -770,6 +771,18 @@ module.exports = {
     const searchTime = Date.now() - startTime;
     const resultCount = result?.results?.length || 0;
     consola.info(`[TMDB] Person search completed in ${searchTime}ms, found ${resultCount} results`);
+    
+    return result;
+  },
+  personInfo: async (params, config) => {
+    const startTime = Date.now();
+    const personId = params.id || 'unknown';
+    consola.info(`[TMDB] Fetching person info for ID: ${personId}`);
+    
+    const result = await makeTmdbRequest(`/person/${personId}`, getApiKey(config), params, 'GET', null, config);
+    
+    const fetchTime = Date.now() - startTime;
+    consola.info(`[TMDB] Person info fetched in ${fetchTime}ms`);
     
     return result;
   },

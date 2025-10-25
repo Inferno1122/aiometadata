@@ -13,12 +13,12 @@ const logger = consola.create({
 });
 
 // Configuration from environment variables
-const WARMUP_MODE = process.env.CACHE_WARMUP_MODE || 'essential'; // 'essential', 'comprehensive', 'both'
+const WARMUP_MODE = process.env.CACHE_WARMUP_MODE || 'essential'; // 'essential', 'comprehensive'
 const WARMUP_CONFIG = {
-  enabled: !!process.env.CACHE_WARMUP_UUID && (WARMUP_MODE === 'comprehensive' || WARMUP_MODE === 'both'),
+  enabled: !!process.env.CACHE_WARMUP_UUID && WARMUP_MODE === 'comprehensive',
   uuid: process.env.CACHE_WARMUP_UUID,
   intervalHours: parseInt(process.env.CATALOG_WARMUP_INTERVAL_HOURS) || 24, // Daily default
-  initialDelaySeconds: parseInt(process.env.CATALOG_WARMUP_INITIAL_DELAY_SECONDS) || 120,
+  initialDelaySeconds: parseInt(process.env.CATALOG_WARMUP_INITIAL_DELAY_SECONDS) || 300,
   maxPagesPerCatalog: parseInt(process.env.CATALOG_WARMUP_MAX_PAGES_PER_CATALOG) || 100,
   resumeOnRestart: process.env.CATALOG_WARMUP_RESUME_ON_RESTART !== 'false',
   quietHoursEnabled: process.env.CATALOG_WARMUP_QUIET_HOURS_ENABLED === 'true',
@@ -113,7 +113,21 @@ class ComprehensiveCatalogWarmer {
   async markWarmed() {
     try {
       const lastWarmupKey = `catalog-warmup:last-run:${this.config.uuid}`;
+      const statsKey = `catalog-warmup:stats:${this.config.uuid}`;
+      
+      // Save timestamp
       await redis.set(lastWarmupKey, Date.now().toString());
+      
+      // Save stats for persistence
+      await redis.set(statsKey, JSON.stringify({
+        catalogsWarmed: this.stats.catalogsWarmed,
+        totalCatalogs: this.stats.totalCatalogs,
+        totalPages: this.stats.totalPages,
+        totalItems: this.stats.totalItems,
+        duration: this.stats.duration,
+        errors: this.stats.errors
+      }));
+      
       const nextRunTime = Date.now() + (this.config.intervalHours * 60 * 60 * 1000);
       this.stats.nextRun = new Date(nextRunTime).toISOString();
       this.log('debug', `Marked warmup complete, next run: ${this.stats.nextRun}`);
@@ -130,43 +144,57 @@ class ComprehensiveCatalogWarmer {
     // Replicate the exact switch case logic from index.js
     switch (catalogId) {
       case 'mal.airing': {
-        const animeResults = await jikan.getAiringNow(page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-airing-${page}-${config.sfw}`, async () => {
+          return await jikan.getAiringNow(page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
 
       case 'mal.upcoming': {
-        const animeResults = await jikan.getUpcoming(page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-upcoming-${page}-${config.sfw}`, async () => {
+          return await jikan.getUpcoming(page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
 
       case 'mal.top_movies': {
-        const animeResults = await jikan.getTopAnimeByType('movie', page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-top-movies-${page}-${config.sfw}`, async () => {
+          return await jikan.getTopAnimeByType('movie', page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
 
       case 'mal.top_series': {
-        const animeResults = await jikan.getTopAnimeByType('tv', page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-top-series-${page}-${config.sfw}`, async () => {
+          return await jikan.getTopAnimeByType('tv', page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
 
       case 'mal.most_popular': {
-        const animeResults = await jikan.getTopAnimeByFilter('bypopularity', page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-most-popular-${page}-${config.sfw}`, async () => {
+          return await jikan.getTopAnimeByFilter('bypopularity', page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
 
       case 'mal.most_favorites': {
-        const animeResults = await jikan.getTopAnimeByFilter('favorite', page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-most-favorites-${page}-${config.sfw}`, async () => {
+          return await jikan.getTopAnimeByFilter('favorite', page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
 
       case 'mal.top_anime': {
-        const animeResults = await jikan.getTopAnimeByType('anime', page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-top-anime-${page}-${config.sfw}`, async () => {
+          return await jikan.getTopAnimeByType('anime', page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
@@ -193,7 +221,9 @@ class ComprehensiveCatalogWarmer {
           const selectedGenre = allAnimeGenres.find(g => g.name === genreNameToFetch);
           if (selectedGenre) {
             const genreId = selectedGenre.mal_id;
-            const animeResults = await jikan.getTopAnimeByDateRange(startDate, endDate, page, genreId, config);
+            const animeResults = await cacheWrapJikanApi(`mal-decade-${catalogId}-${page}-${genreId}-${config.sfw}`, async () => {
+              return await jikan.getTopAnimeByDateRange(startDate, endDate, page, genreId, config);
+            });
             metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
           }
         }
@@ -211,7 +241,9 @@ class ComprehensiveCatalogWarmer {
           const selectedGenre = allAnimeGenres.find(g => g.name === genreNameToFetch);
           if (selectedGenre) {
             const genreId = selectedGenre.mal_id;
-            const animeResults = await jikan.getAnimeByGenre(genreId, mediaType, page, config);
+            const animeResults = await cacheWrapJikanApi(`mal-genre-${genreId}-${mediaType}-${page}-${config.sfw}`, async () => {
+              return await jikan.getAnimeByGenre(genreId, mediaType, page, config);
+            });
             metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
           }
         }
@@ -229,7 +261,9 @@ class ComprehensiveCatalogWarmer {
 
           if (selectedStudio) {
             const studioId = selectedStudio.mal_id;
-            const animeResults = await jikan.getAnimeByStudio(studioId, page);
+            const animeResults = await cacheWrapJikanApi(`mal-studio-${studioId}-${page}-${config.sfw}`, async () => {
+              return await jikan.getAnimeByStudio(studioId, page);
+            });
             metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
           } else {
             this.log('warn', `Could not find a MAL ID for studio name: ${genreName}`);
@@ -240,7 +274,9 @@ class ComprehensiveCatalogWarmer {
 
       case 'mal.schedule': {
         const dayOfWeek = genreName || 'Monday';
-        const animeResults = await jikan.getAiringSchedule(dayOfWeek, page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-schedule-${dayOfWeek}-${page}-${config.sfw}`, async () => {
+          return await jikan.getAiringSchedule(dayOfWeek, page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
@@ -266,7 +302,9 @@ class ComprehensiveCatalogWarmer {
         const parts = seasonString.split(' ');
         const season = parts[0].toLowerCase();
         const year = parseInt(parts[1]);
-        const animeResults = await jikan.getAnimeBySeason(year, season, page, config);
+        const animeResults = await cacheWrapJikanApi(`mal-season-${year}-${season}-${page}-${config.sfw}`, async () => {
+          return await jikan.getAnimeBySeason(year, season, page, config);
+        });
         metas = await parseAnimeCatalogMetaBatch(animeResults, config, language);
         break;
       }
@@ -343,7 +381,7 @@ class ComprehensiveCatalogWarmer {
     return { pages: page - 1, items: totalItems };
   }
 
-  async runWarmup() {
+  async runWarmup(force = false) {
     if (this.isRunning) {
       this.log('warn', 'Warmup already running, skipping');
       return;
@@ -359,10 +397,14 @@ class ComprehensiveCatalogWarmer {
       return;
     }
 
-    // Check if we should run
-    const shouldRun = await this.shouldWarmup();
-    if (!shouldRun) {
-      return;
+    // Check if we should run (skip if force is true)
+    if (!force) {
+      const shouldRun = await this.shouldWarmup();
+      if (!shouldRun) {
+        return;
+      }
+    } else {
+      this.log('info', 'Force restart requested - bypassing interval check');
     }
 
     // Check quiet hours
@@ -386,11 +428,20 @@ class ComprehensiveCatalogWarmer {
 
       // Get enabled catalogs from user config
       const enabledCatalogs = (config.catalogs || []).filter(c => c.enabled);
-      this.stats.totalCatalogs = enabledCatalogs.length;
-      this.stats.catalogsWarmed = 0;
-      this.stats.totalPages = 0;
-      this.stats.totalItems = 0;
-      this.stats.errors = [];
+      
+      // Reset stats completely for this run
+      this.stats = {
+        enabled: WARMUP_CONFIG.enabled,
+        lastRun: this.stats.lastRun,
+        nextRun: this.stats.nextRun,
+        isRunning: true,
+        totalCatalogs: enabledCatalogs.length,
+        catalogsWarmed: 0,
+        totalPages: 0,
+        totalItems: 0,
+        duration: null,
+        errors: []
+      };
 
       this.log('info', `Found ${enabledCatalogs.length} enabled catalogs to warm`);
 
@@ -462,7 +513,21 @@ class ComprehensiveCatalogWarmer {
     }, this.config.intervalHours * 60 * 60 * 1000);
   }
 
-  getStats() {
+  async getStats() {
+    try {
+      // Load persisted stats from Redis
+      const statsKey = `catalog-warmup:stats:${this.config.uuid}`;
+      const persistedStats = await redis.get(statsKey);
+      
+      if (persistedStats) {
+        const parsedStats = JSON.parse(persistedStats);
+        // Merge persisted stats with current stats
+        this.stats = { ...this.stats, ...parsedStats };
+      }
+    } catch (error) {
+      this.log('error', `Failed to load persisted stats: ${error.message}`);
+    }
+    
     return {
       ...this.stats,
       config: {
@@ -483,12 +548,17 @@ function startComprehensiveCatalogWarming() {
   return warmer.startBackgroundWarming();
 }
 
-function getWarmupStats() {
-  return warmer.getStats();
+async function getWarmupStats() {
+  return await warmer.getStats();
+}
+
+function forceRestartWarmup() {
+  return warmer.runWarmup(true);
 }
 
 module.exports = {
   startComprehensiveCatalogWarming,
-  getWarmupStats
+  getWarmupStats,
+  forceRestartWarmup
 };
 

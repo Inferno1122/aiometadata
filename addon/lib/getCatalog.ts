@@ -24,7 +24,7 @@ import * as moviedb from "./getTmdb.js";
 import * as tvdb from './tvdb.js';
 import { to3LetterCode, to3LetterCountryCode } from './language-map.js';
 import { resolveAllIds } from './id-resolver.js';
-import { cacheWrapTvdbApi } from './getCache.js';
+import { cacheWrapTvdbApi, cacheWrap } from './getCache.js';
 import { getTVDBContentRatingId } from '../utils/tvdbContentRating.js';
 import { getMeta } from './getMeta.js';
 import { cacheWrapMetaSmart } from './getCache.js';
@@ -308,7 +308,6 @@ async function getTvdbCollectionsCatalog(type: string, id: string, page: number,
 async function getTmdbAndMdbListCatalog(type: string, id: string, genre: string, page: number, language: string, config: UserConfig, userUUID: string): Promise<any[]> {
   if (id.startsWith("mdblist.")) {
     logger.info(`Fetching MDBList catalog: ${id}, Genre: ${genre}, Page: ${page}`);
-    const listId = id.split(".")[1];
     const catalogConfig = config.catalogs?.find(c => c.id === id);
     const sort = catalogConfig?.sort === 'default' ? undefined : catalogConfig?.sort;
     const order = catalogConfig?.sort === 'default' ? undefined : catalogConfig?.order;
@@ -321,10 +320,40 @@ async function getTmdbAndMdbListCatalog(type: string, id: string, genre: string,
       logger.debug(`Converted genre "${genre}" to slug "${genreSlug}"`);
     }
     
-    const response = await fetchMDBListItems(listId, config.apiKeys?.mdblist || process.env.MDBLIST_API_KEY || '', language, page, sort, order, genreSlug);
+    // Handle different watchlist catalog IDs
+    let listId: string;
+    let unified: boolean | undefined;
+    
+    if (id === 'mdblist.watchlist') {
+      // Unified watchlist
+      listId = 'watchlist';
+      unified = true;
+    } else if (id === 'mdblist.watchlist.movies' || id === 'mdblist.watchlist.series') {
+      // Non-unified watchlist (separate movies/series catalogs)
+      listId = 'watchlist';
+      unified = false;
+    } else {
+      // Regular MDBList catalog
+      listId = id.split(".")[1];
+      unified = undefined;
+    }
+    
+    const response = await fetchMDBListItems(listId, config.apiKeys?.mdblist || process.env.MDBLIST_API_KEY || '', language, page, sort, order, genreSlug, unified, type);
     
     // Smart pagination handling
-    if (response.totalItems !== undefined && response.totalPages !== undefined) {
+    if (listId === 'watchlist') {
+      // For watchlist, we only have hasMore information
+      const itemInfo = `${response.items.length} items`;
+      const statusInfo = response.hasMore ? 'more available' : 'end reached';
+      
+      logger.debug(`MDBList watchlist pagination - page ${page}, ${itemInfo}, ${statusInfo}`);
+      
+      // Early exit for empty pages beyond list end
+      if (!response.hasMore && response.items.length === 0) {
+        logger.debug(`MDBList watchlist early exit - no more items at page ${page}`);
+        return [];
+      }
+    } else if (response.totalItems !== undefined && response.totalPages !== undefined) {
       const pageInfo = `page ${page}/${response.totalPages}`;
       const itemInfo = `${response.items.length} items`;
       const totalInfo = `${response.totalItems} total`;
@@ -371,8 +400,9 @@ async function getTmdbAndMdbListCatalog(type: string, id: string, genre: string,
   // define preferred provider as string
   
   //sort res.results by vote count in descending order
-  res.results.sort((a, b) => new Date(b.release_date).getTime() - new Date(a.release_date).getTime());
-  const metas = await Promise.all(res.results.map(async item => {
+  if (res?.results) {
+    res.results.sort((a, b) => new Date(b.release_date).getTime() - new Date(a.release_date).getTime());
+    const metas = await Promise.all(res.results.map(async item => {
     let stremioId = `tmdb:${item.id}`;
     
     const result = await cacheWrapMetaSmart(userUUID, stremioId, async () => {
@@ -397,6 +427,9 @@ async function getTmdbAndMdbListCatalog(type: string, id: string, genre: string,
   }
   
   return validMetas;
+  } else {
+    return [];
+  }
 }
 
 async function buildParameters(type: string, language: string, page: number, id: string, genre: string, genreList: any[], config: UserConfig): Promise<any> {
@@ -511,93 +544,78 @@ async function getStremThruCatalog(type: string, catalogId: string, genre: strin
     // sparkle emoji
     logger.debug(`[✨ StremThru] Using catalog URL: ${catalogUrl}`);
     
-    // Calculate StremThru pagination. Upstream supports skip in steps of page size (typically 20)
-    // so request the correct page directly and avoid empty local slices.
+    // --- Dynamic pagination ---
     const pageSize = parseInt(process.env.CATALOG_LIST_ITEMS_SIZE || '20');
-    const stremThruBatchSize = pageSize;
-    
-    // Determine the global index for this page and use it as the skip value upstream
-    const globalItemIndex = (page - 1) * pageSize; // 0-based index of first item on this page
-    const stremThruSkip = globalItemIndex;
-    
-    // Fetch the 100-item batch from StremThru with server-side genre filtering
-    let items = await fetchStremThruCatalog(catalogUrl, stremThruSkip, genre);
-    
-    // Fallback: if we get empty results with skip > 0, try skip=0 (for small genre lists)
-    if ((!items || items.length === 0) && stremThruSkip > 0) {
-      logger.debug(`[✨ StremThru] Empty results with skip=${stremThruSkip}, falling back to skip=0`);
-      items = await fetchStremThruCatalog(catalogUrl, 0, genre);
+    const stremThruBatchSize = 100; // fixed backend limit
+    const globalItemIndex = (page - 1) * pageSize;
+
+    const batchesNeeded = Math.ceil((globalItemIndex % stremThruBatchSize + pageSize) / stremThruBatchSize);
+    const firstBatchSkip = Math.floor(globalItemIndex / stremThruBatchSize) * stremThruBatchSize;
+
+    // ✅ Debug helper
+    const debugPagination = (skips: number[], start: number, end: number, total: number) => {
+      logger.info(
+        `[🧩 Pagination Debug] Page ${page}: fetching batches ${skips.join(", ")} ` +
+        `(skip range = ${firstBatchSkip}–${firstBatchSkip + skips.length * stremThruBatchSize - 1}), ` +
+        `slicing local ${start}–${end}, total fetched = ${total}`
+      );
+    };
+
+    // --- Fetch all required batches with caching ---
+    const batchSkips: number[] = [];
+    let allItems: any[] = [];
+
+    for (let i = 0; i < batchesNeeded; i++) {
+      const skip = firstBatchSkip + i * stremThruBatchSize;
+      batchSkips.push(skip);
+      const cacheKey = `custom-batch:${catalogId}:${genre || 'all'}:skip=${skip}`;
+      
+      // Use cacheWrap to cache the batch fetch
+      const batch = await cacheWrap(cacheKey, async () => {
+        logger.debug(`[✨ StremThru] Fetching fresh batch: skip=${skip}, genre=${genre || 'all'}`);
+        return await fetchStremThruCatalog(catalogUrl, skip, genre);
+      }, 300, { enableErrorCaching: true, maxRetries: 2 }); // 5 minute TTL for batches
+      
+      if (batch?.length) allItems = allItems.concat(batch);
     }
-    
-    if (!items || items.length === 0) {
-      logger.warn(`[StremThru] No items returned from catalog: ${catalogUrl} (page: ${page}, genre: ${genre || 'all'})`);
+
+    if (!allItems.length) {
+      logger.warn(`[✨ StremThru] No items fetched from catalog: ${catalogId}`);
       return [];
     }
+
+    // --- Slice exact page range ---
+    const localStartIndex = globalItemIndex - firstBatchSkip;
+    const localEndIndex = localStartIndex + pageSize;
+    const paginatedItems = allItems.slice(localStartIndex, localEndIndex);
+
+    // 📋 Print pagination debug info
+    debugPagination(batchSkips, localStartIndex, localEndIndex, allItems.length);
     
-    // No client-side filtering needed - StremThru handles genre filtering server-side
-    const filteredItems = items;
-    
-    // Client-side pagination within the fetched batch
-    let localStartIndex, localEndIndex;
-    
-    if (stremThruSkip === 0 && filteredItems.length < stremThruBatchSize) {
-      // Fallback case: we got all results from skip=0, paginate through entire list
-      localStartIndex = globalItemIndex;
-      localEndIndex = Math.min(globalItemIndex + pageSize, filteredItems.length);
-      // If we're beyond available items, return empty
-      if (localStartIndex >= filteredItems.length) {
-        localStartIndex = 0;
-        localEndIndex = 0;
-      }
-    } else {
-      // Normal case: paginate within the 100-item batch
-      localStartIndex = globalItemIndex % stremThruBatchSize;
-      localEndIndex = Math.min(localStartIndex + pageSize, filteredItems.length);
-    }
-    
-    let paginatedItems = filteredItems.slice(localStartIndex, localEndIndex);
-    
-    // Handle case where page spans across batch boundaries (skip normal batch boundaries in fallback case)
-    if (paginatedItems.length < pageSize && localStartIndex + pageSize > stremThruBatchSize && !(stremThruSkip === 0 && filteredItems.length < stremThruBatchSize)) {
-      // Need to fetch next batch to complete the page
-      const nextStremThruSkip = stremThruSkip + stremThruBatchSize;
-      const nextItems = await fetchStremThruCatalog(catalogUrl, nextStremThruSkip, genre);
-      
-      if (nextItems && nextItems.length > 0) {
-        // No client-side filtering needed - StremThru handles genre filtering server-side
-        const nextFilteredItems = nextItems;
-        
-        const remainingItemsNeeded = pageSize - paginatedItems.length;
-        const nextBatchItems = nextFilteredItems.slice(0, remainingItemsNeeded);
-        paginatedItems = [...paginatedItems, ...nextBatchItems];
-        
-        logger.debug(`[✨ StremThru] Fetched additional ${nextBatchItems.length} items from next batch (skip: ${nextStremThruSkip}, genre: ${genre || 'all'})`);
-      }
-    }
-    
-    logger.debug(`[✨ StremThru] Batch skip: ${stremThruSkip}, local slice: ${localStartIndex}-${localEndIndex}, final items: ${paginatedItems.length}`);
-    
-    // Parse items into Stremio format
+    // Log caching benefits
+    logger.info(`[✨ StremThru] Batch caching: fetched ${batchesNeeded} batch(es) for page ${page}, total items: ${allItems.length}`);
+
+    // --- Parse and filter metas ---
     let metas = await parseStremThruItems(paginatedItems, type, genre, language, config);
-    
-    // Apply digital release filter if enabled (movies only)
+
+    // Filter unreleased content if configured
     if (type === 'movie' && config.hideUnreleasedDigital) {
-      const beforeCount = metas.length;
+      const before = metas.length;
       metas = metas.filter(meta => isReleasedDigitally(meta));
-      const afterCount = metas.length;
-      if (beforeCount !== afterCount) {
-        logger.info(`Digital release filter (StremThru): filtered out ${beforeCount - afterCount} unreleased movies`);
+      const after = metas.length;
+      if (before !== after) {
+        logger.info(`Digital release filter (StremThru): filtered out ${before - after} unreleased movies`);
       }
     }
 
-    // Apply age rating filter if enabled
+    // Filter by age rating if enabled
     metas = applyAgeRatingFilter(metas, type, config);
-    
-    logger.success(`[StremThru] Successfully processed ${metas.length} items for catalog: ${catalogId} (page: ${page})`);
+
+    logger.success(`[StremThru] Processed ${metas.length} items for catalog ${catalogId} (page ${page})`);
     return metas;
-    
-  } catch (error: any) {
-    logger.error(`[StremThru] Error processing catalog ${catalogId}:`, error.message);
+
+  } catch (err: any) {
+    logger.error(`[StremThru] Error processing catalog ${catalogId}:`, err.message);
     return [];
   }
 }
