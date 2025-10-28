@@ -117,6 +117,7 @@ async function ensureSystemConfig() {
       blurThumbs: false,
       showPrefix: false,
       showMetaProviderAttribution: false,
+      displayAgeRating: false,
       castCount: 10,
       sfw: false,
       hideUnreleasedDigital: false,
@@ -177,7 +178,7 @@ async function ensureSystemConfig() {
  */
 async function shouldWarmPopularContent() {
   const redis = require('./redisClient');
-  const WARM_INTERVAL_MS = parseInt(process.env.CACHE_WARM_INTERVAL_HOURS || '24', 10) * 60 * 60 * 1000; // Default 24h
+  const WARM_INTERVAL_MS = Math.max(12, parseInt(process.env.CACHE_WARM_INTERVAL_HOURS || '24', 10)) * 60 * 60 * 1000; // Default 24h, minimum 12h
   
   try {
     const lastWarmKey = 'cache-warming:last-popular-warm';

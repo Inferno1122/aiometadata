@@ -76,8 +76,8 @@ if (ENABLE_CACHE_WARMING && !NO_CACHE) {
   // Schedule periodic warming (non-blocking)
   scheduleEssentialWarming(CACHE_WARMING_INTERVAL);
   
-  // Schedule popular content warming based on CACHE_WARM_INTERVAL_HOURS env (default 24h)
-  const POPULAR_WARM_INTERVAL_HOURS = parseInt(process.env.CACHE_WARM_INTERVAL_HOURS || '24', 10);
+  // Schedule popular content warming based on CACHE_WARM_INTERVAL_HOURS env (default 24h, minimum 12h)
+  const POPULAR_WARM_INTERVAL_HOURS = Math.max(12, parseInt(process.env.CACHE_WARM_INTERVAL_HOURS || '24', 10));
   const POPULAR_WARM_CHECK_INTERVAL = 15 * 60 * 1000; // Check every 15 minutes
   
   consola.info(`[Cache Warming] Scheduling popular content warming (interval: ${POPULAR_WARM_INTERVAL_HOURS}h, check every 15min)`);
@@ -155,6 +155,7 @@ const respond = function (req, res, data, opts) {
           exclusionKeywords: req.userConfig.exclusionKeywords,
           regexExclusionFilter: req.userConfig.regexExclusionFilter,
           showMetaProviderAttribution: req.userConfig.showMetaProviderAttribution,
+          displayAgeRating: req.userConfig.displayAgeRating,
           apiKeys: { 
             rpdb: req.userConfig.apiKeys?.rpdb || process.env.RPDB_API_KEY || '',
             mdblist: req.userConfig.apiKeys?.mdblist || process.env.MDBLIST_API_KEY || ''
@@ -171,6 +172,7 @@ const respond = function (req, res, data, opts) {
           castCount: req.userConfig.castCount,
           blurThumbs: req.userConfig.blurThumbs,
           showMetaProviderAttribution: req.userConfig.showMetaProviderAttribution,
+          displayAgeRating: req.userConfig.displayAgeRating,
           apiKeys: { 
             rpdb: req.userConfig.apiKeys?.rpdb || process.env.RPDB_API_KEY || '',
             mdblist: req.userConfig.apiKeys?.mdblist || process.env.MDBLIST_API_KEY || ''
@@ -606,7 +608,7 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
         switch (id) {
           case "tmdb.trending":
             console.log(`[CATALOG ROUTE 2] tmdb.trending called with type=${actualType}, language=${language}, page=${page}`);
-            metas = (await getTrending(...args, genreName, config, userUUID)).metas;
+            metas = (await getTrending(...args, genreName, config, userUUID, config.providers?.series !== 'tmdb')).metas;
             break;
           case "tmdb.favorites":
             metas = (await getFavorites(...args, genreName, sessionId, config)).metas;
@@ -615,7 +617,7 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
             metas = (await getWatchList(...args, genreName, sessionId, config)).metas;
             break;
           case "tvdb.genres": {
-            metas = (await getCatalog(actualType, language, page, id, genreName, config, userUUID)).metas;
+            metas = (await getCatalog(actualType, language, page, id, genreName, config, userUUID, config.providers?.series !== 'tmdb')).metas;
             break;
           }
           case "tvdb.collections": {
@@ -778,7 +780,7 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
             break;
           }
           default:
-            metas = (await getCatalog(actualType, language, page, id, genreName, config, userUUID)).metas;
+            metas = (await getCatalog(actualType, language, page, id, genreName, config, userUUID, config.providers?.series !== 'tmdb')).metas;
             break;
       }
       return { metas: metas || [] };
@@ -824,7 +826,7 @@ addon.get("/stremio/:userUUID/meta/:type/:id.json", async function (req, res) {
 
     if (!result || !result.meta) {
       return respond(req, res, { meta: null });
-    } else if (result && result.meta) {
+    } /*else if (result && result.meta) {
       // cache wrap the ratings
       if(result.meta.mal_id) {
         try {
@@ -858,7 +860,7 @@ addon.get("/stremio/:userUUID/meta/:type/:id.json", async function (req, res) {
           }
         }
       }
-    }
+    }*/
     
     // Note: Popular content warming is now handled globally by warmPopularContent()
     // which runs every 6 hours in the background

@@ -101,10 +101,20 @@ async function parseTvdbSearchResult(type, extendedRecord, language, config) {
                    || overviewTranslations.find(t => t.language === 'eng')?.overview
                    || extendedRecord.overview;
   
-  const tmdbId = extendedRecord.remoteIds?.find(id => id.sourceName === 'TheMovieDB.com')?.id;
-  const imdbId = extendedRecord.remoteIds?.find(id => id.sourceName === 'IMDB')?.id;
-  const tvmazeId = extendedRecord.remoteIds?.find(id => id.sourceName === 'TV Maze')?.id;
-  const tvdbId = extendedRecord.id;
+  let tmdbId = extendedRecord.remoteIds?.find(id => id.sourceName === 'TheMovieDB.com')?.id;
+  let imdbId = extendedRecord.remoteIds?.find(id => id.sourceName === 'IMDB')?.id;
+  let tvmazeId = extendedRecord.remoteIds?.find(id => id.sourceName === 'TV Maze')?.id;
+  let tvdbId = extendedRecord.id;
+  let allIds = {
+    tmdbId: tmdbId,
+    imdbId: imdbId,
+    tvmazeId: tvmazeId,
+    tvdbId: tvdbId
+  };
+  allIds = await resolveAllIds(`tvdb:${tvdbId}`, type, config, allIds, ['imdb']);
+  tmdbId = allIds.tmdbId;
+  imdbId = allIds.imdbId;
+  tvmazeId = allIds.tvmazeId;
   logger.debug('Resolved IDs:', {tmdbId, imdbId, tvmazeId, tvdbId});
   
   const rawPosterUrl = findArtwork(extendedRecord.artworks, type === 'movie' ? 14 : 2, langCode3, config);
@@ -409,8 +419,8 @@ async function performTmdbSearch(type, query, language, config, searchPersons = 
         const selectedPoster = Utils.selectTmdbImageByLang(details.images?.posters, config);
         const fallbackImage = `${host}/missing_poster.png`;
         logoUrl = selectedLogo?.file_path ? `https://image.tmdb.org/t/p/original${selectedLogo?.file_path}` : null;
-        backgroundUrl = selectedBg?.file_path ? `https://image.tmdb.org/t/p/original${selectedBg?.file_path}` : null;
-        posterUrl = selectedPoster?.file_path ? `https://image.tmdb.org/t/p/original${selectedPoster?.file_path}` : fallbackImage;
+        backgroundUrl = selectedBg?.file_path ? `https://image.tmdb.org/t/p/original${selectedBg?.file_path}` : details.backdrop_path ? `https://image.tmdb.org/t/p/original${details.backdrop_path}` : null;
+        posterUrl = selectedPoster?.file_path ? `https://image.tmdb.org/t/p/original${selectedPoster?.file_path}` : details.poster_path ? `https://image.tmdb.org/t/p/original${details.poster_path}` : fallbackImage;
 
         // OPTIMIZATION: Fetch poster, rating, logo, and resolve final stremio ID in parallel
         const imdbRating = allIds.imdbId ? await getImdbRating(allIds.imdbId, mediaType) : null;

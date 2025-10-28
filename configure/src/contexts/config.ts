@@ -33,6 +33,7 @@ export interface AppConfig {
   showPrefix: boolean;
   showMetaProviderAttribution: boolean;
   castCount: number;
+  displayAgeRating: boolean;
   providers: {
     movie: string;
     series: string;
@@ -103,6 +104,12 @@ export interface AppConfig {
     engineEnabled?: {
       [engine: string]: boolean;
     };
+    // Custom names for search providers
+    providerNames?: {
+      [providerId: string]: string;
+    };
+    // Order of search catalogs
+    searchOrder?: string[];
   };
   streaming: string[];
   displayTypeOverrides?: {

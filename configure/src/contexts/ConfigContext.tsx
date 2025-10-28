@@ -87,6 +87,7 @@ const initialConfig: AppConfig = {
   showPrefix: false,
   showMetaProviderAttribution: false,
   castCount: 10,
+  displayAgeRating: false,
   sfw: false,
   hideUnreleasedDigital: false,
   providers: { movie: 'tmdb', series: 'tvdb', anime: 'mal', anime_id_provider: 'imdb', forceAnimeForDetectedImdb: false },
@@ -143,6 +144,8 @@ const initialConfig: AppConfig = {
       'mal.search.movie': true,
       'mal.search.series': true,
     },
+    providerNames: {},
+    searchOrder: ['movie', 'series', 'tvdb.collections.search', 'anime_series', 'anime_movie'],
   },
   streaming: [], // Added to satisfy AppConfig interface
 };
