@@ -10,7 +10,7 @@ const { getCatalog } = require("./lib/getCatalog");
 const { getSearch } = require("./lib/getSearch");
 const { getManifest, DEFAULT_LANGUAGE } = require("./lib/getManifest");
 const { getMeta } = require("./lib/getMeta");
-const { cacheWrap, cacheWrapMeta, cacheWrapMetaSmart, cacheWrapCatalog, cacheWrapSearch, cacheWrapJikanApi, cacheWrapStaticCatalog, cacheWrapGlobal, getCacheHealth, clearCacheHealth, logCacheHealth } = require("./lib/getCache");
+const { cacheWrap, cacheWrapMeta, cacheWrapMetaSmart, cacheWrapCatalog, cacheWrapSearch, cacheWrapJikanApi, cacheWrapStaticCatalog, cacheWrapGlobal, getCacheHealth, clearCacheHealth, logCacheHealth, stableStringify } = require("./lib/getCache");
 const redis = require("./lib/redisClient");
 const { warmEssentialContent, warmPopularContent, scheduleEssentialWarming } = require("./lib/cacheWarmer");
 const requestTracker = require("./lib/requestTracker");
@@ -577,7 +577,7 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
   }
   const cacheWrapper = cacheWrapCatalog;
 
-  const catalogKey = `${id}:${actualType}:${JSON.stringify(extraArgs || {})}`;
+  const catalogKey = `${id}:${actualType}:${stableStringify(extraArgs || {})}`;
   
   const cacheOptions = {
     enableErrorCaching: true,
@@ -589,7 +589,7 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
       
       if (id === 'search') {
       // Use search-specific cache wrapper
-      const searchKey = `${id}:${actualType}:${JSON.stringify(extraArgs)}`;
+      const searchKey = `${id}:${actualType}:${stableStringify(extraArgs)}`;
       
       responseData = await cacheWrapSearch(userUUID, searchKey, async () => {
         const searchResult = await getSearch(id, actualType, language, extraArgs, config);
@@ -2031,7 +2031,7 @@ addon.post("/api/dashboard/warming/control", (req, res) => {
 });
 
 // Maintenance Task Execution endpoint
-addon.post("/api/dashboard/maintenance/execute", (req, res) => {
+addon.post("/api/dashboard/maintenance/execute", async (req, res) => {
   const adminKey = process.env.ADMIN_KEY;
   if (adminKey && req.headers['x-admin-key'] !== adminKey) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -2047,7 +2047,19 @@ addon.post("/api/dashboard/maintenance/execute", (req, res) => {
     let result = { success: false, message: '' };
     
     // Handle warming tasks
-    if (taskId === 7) { // Essential Cache Warming
+    if (taskId === 1) { // Clear expired cache entries
+      if (action === 'restart' || action === 'enable') {
+        try {
+          const dashboardApi = getDashboardAPI();
+          result = await dashboardApi.clearExpiredCacheEntries();
+        } catch (error) {
+          console.error('[Maintenance Task] Error clearing expired cache:', error);
+          result = { success: false, message: `Failed to clear expired cache: ${error.message}` };
+        }
+      } else if (action === 'stop') {
+        result = { success: true, message: 'Cache cleanup task completed' };
+      }
+    } else if (taskId === 7) { // Essential Cache Warming
       if (action === 'restart' || action === 'enable') {
         const { warmEssentialContent } = require('./lib/cacheWarmer');
         warmEssentialContent();
@@ -2070,6 +2082,25 @@ addon.post("/api/dashboard/maintenance/execute", (req, res) => {
         result = { success: true, message: 'Comprehensive catalog warming started (force restart)' };
       } else if (action === 'stop') {
         result = { success: true, message: 'Comprehensive warming will stop after current task' };
+      }
+    } else if (taskId === 10) { // Cache Cleanup Scheduler Control
+      const { getCacheCleanupScheduler } = require('./lib/cacheCleanupScheduler');
+      const scheduler = getCacheCleanupScheduler();
+      
+      if (action === 'restart' || action === 'enable') {
+        if (scheduler) {
+          scheduler.start();
+          result = { success: true, message: 'Cache cleanup scheduler started' };
+        } else {
+          result = { success: false, message: 'Cache cleanup scheduler not available' };
+        }
+      } else if (action === 'stop') {
+        if (scheduler) {
+          scheduler.stop();
+          result = { success: true, message: 'Cache cleanup scheduler stopped' };
+        } else {
+          result = { success: false, message: 'Cache cleanup scheduler not available' };
+        }
       }
     } else {
       // Handle other maintenance tasks (cache cleanup, etc.)
@@ -2102,4 +2133,4 @@ async function startServerWithCacheWarming() {
   return addon;
 }
 
-module.exports = { addon, startServerWithCacheWarming };
+module.exports = { addon, startServerWithCacheWarming, getDashboardAPI };
