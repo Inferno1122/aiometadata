@@ -9,19 +9,15 @@ const { numberValueTypes } = require('framer-motion');
 const REMOTE_MAPPING_URL = 'https://raw.githubusercontent.com/Fribb/anime-lists/refs/heads/master/anime-list-full.json';
 const REMOTE_KITSU_TO_IMDB_MAPPING_URL = 'https://raw.githubusercontent.com/TheBeastLT/stremio-kitsu-anime/bbf149474f610885629b95b1b9ce4408c3c1353d/static/data/imdb_mapping.json';
 const REMOTE_TRAKT_ANIME_MOVIES_URL = 'https://raw.githubusercontent.com/rensetsu/db.trakt.extended-anitrakt/refs/heads/main/movies_ex.json';
-
-// ✅ changed from process.cwd() to /tmp for Vercel
 const LOCAL_CACHE_PATH = '/tmp/anime-list-full.json.cache';
 const LOCAL_KITSU_TO_IMDB_MAPPING_PATH = '/tmp/imdb_mapping.json.cache';
 const LOCAL_TRAKT_ANIME_MOVIES_PATH = '/tmp/trakt-anime-movies.json.cache';
-
 const REDIS_ETAG_KEY = 'anime-list-etag'; 
 const REDIS_KITSU_TO_IMDB_ETAG_KEY = 'kitsu-to-imdb-etag';
 const REDIS_TRAKT_ANIME_MOVIES_ETAG_KEY = 'trakt-anime-movies-etag';
-
-const UPDATE_INTERVAL_HOURS = parseInt(process.env.ANIME_LIST_UPDATE_INTERVAL_HOURS) || 24; // Update every 24 hours (configurable)
-const UPDATE_INTERVAL_KITSU_TO_IMDB_HOURS = parseInt(process.env.KITSU_TO_IMDB_UPDATE_INTERVAL_HOURS) || 24; // Update every 24 hours (configurable)
-const UPDATE_INTERVAL_TRAKT_ANIME_MOVIES_HOURS = parseInt(process.env.TRAKT_ANIME_MOVIES_UPDATE_INTERVAL_HOURS) || 24; // Update every 24 hours (configurable)
+const UPDATE_INTERVAL_HOURS = parseInt(process.env.ANIME_LIST_UPDATE_INTERVAL_HOURS) || 24;
+const UPDATE_INTERVAL_KITSU_TO_IMDB_HOURS = parseInt(process.env.KITSU_TO_IMDB_UPDATE_INTERVAL_HOURS) || 24;
+const UPDATE_INTERVAL_TRAKT_ANIME_MOVIES_HOURS = parseInt(process.env.TRAKT_ANIME_MOVIES_UPDATE_INTERVAL_HOURS) || 24;
 
 let animeIdMap = new Map();
 let tvdbIdToAnimeListMap = new Map();
