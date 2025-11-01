@@ -18,9 +18,9 @@ const ADDON_VERSION = packageJson.version;
 
 // --- Time To Live (TTL) constants in seconds ---
 const META_TTL = parseInt(process.env.META_TTL || 7 * 24 * 60 * 60, 10);
-const CATALOG_TTL = parseInt(process.env.CATALOG_TTL || 1 * 24 * 60 * 60, 10);
+const CATALOG_TTL = parseInt(process.env.CATALOG_TTL || 0, 10);
 const JIKAN_API_TTL = 1 * 24 * 60 * 60;
-const STATIC_CATALOG_TTL = 30 * 24 * 60 * 60;
+const STATIC_CATALOG_TTL = 0;
 const TVDB_API_TTL = 12 * 60 * 60;
 const TVMAZE_API_TTL = 12 * 60 * 60;
 const MDBLIST_GENRES_TTL = 30 * 24 * 60 * 60; // Cache MDBList genres for 30 days
