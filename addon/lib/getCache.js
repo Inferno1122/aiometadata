@@ -26,6 +26,13 @@ const TVMAZE_API_TTL = 12 * 60 * 60;
 const MDBLIST_GENRES_TTL = 30 * 24 * 60 * 60; // Cache MDBList genres for 30 days
 const STREMTHRU_GENRES_TTL = 7 * 24 * 60 * 60; // Cache StremThru genres for 7 days
 
+// Store current request context for catalog/search operations
+// This allows reconstruction to access the correct RPDB state
+let currentRequestContext = {
+  catalogConfig: null,
+  searchEngine: null
+};
+
 // Enhanced error caching strategy with self-healing
 const ERROR_TTL_STRATEGIES = {
   EMPTY_RESULT: 0,             // Don't cache empty results at all
@@ -667,6 +674,7 @@ async function cacheWrapCatalog(userUUID, catalogKey, method, options = {}) {
   }
 
   const idOnly = catalogKey.split(':')[0];
+  const catalogType = catalogKey.split(':')[1];
   const trendingIds = new Set(['tmdb.trending']);
 
   // Disable caching for trending catalogs since they change frequently
@@ -683,7 +691,8 @@ async function cacheWrapCatalog(userUUID, catalogKey, method, options = {}) {
   const shouldExcludeLanguageForMAL = isMALCatalog && isMALAnimeProvider;
   
   // Find the catalog config to get per-catalog settings (like enableRPDB)
-  const catalogFromConfig = config.catalogs?.find(c => c.id === idOnly);
+  // Match by both id AND type to handle duplicate IDs (e.g., tvdb.trending for movie vs series)
+  const catalogFromConfig = config.catalogs?.find(c => c.id === idOnly && c.type === catalogType);
   const enableRPDB = catalogFromConfig?.enableRPDB !== false; // Default to true if not explicitly disabled
   
   // Create context-aware catalog config (only relevant parameters for catalogs)
@@ -765,8 +774,17 @@ async function cacheWrapCatalog(userUUID, catalogKey, method, options = {}) {
   
   const catalogSig = shortSignature(`${userUUID || ''}|${idOnly}|${catalogConfigString}|ttl:${cacheTTL}`);
   cacheLogger.info(`Catalog key detail (${idOnly}) [sig:${catalogSig}] userScoped:${idOnly.startsWith('mdblist.') || idOnly.includes('stremthru.') || idOnly.startsWith('custom.')} ttl:${cacheTTL}s key:${key}`);
-    
-  return cacheWrap(key, method, cacheTTL, options);
+  
+  // Set module-level context for this catalog request
+  // This allows reconstruction to access the correct RPDB state
+  currentRequestContext.catalogConfig = catalogFromConfig;
+  
+  try {
+    return await cacheWrap(key, method, cacheTTL, options);
+  } finally {
+    // Clear context after request completes
+    currentRequestContext.catalogConfig = null;
+  }
   }
 
 /**
@@ -1060,8 +1078,21 @@ const metaConfigString = stableStringify(metaConfig);
    
    // Poster
    if (meta.poster) {
+     // Extract raw poster URL if this is an RPDB proxy URL
+     let rawPoster = meta.poster;
+     if (meta.poster && meta.poster.includes('/poster/') && meta.poster.includes('fallback=')) {
+       try {
+         const url = new URL(meta.poster);
+         const fallback = url.searchParams.get('fallback');
+         if (fallback) {
+           rawPoster = decodeURIComponent(fallback);
+         }
+       } catch (e) {
+         // Keep original if URL parsing fails
+       }
+     }
      componentPromises.push(
-       cacheComponent(componentCacheKeys.poster, { poster: meta.poster }, ttl)
+       cacheComponent(componentCacheKeys.poster, { poster: rawPoster }, ttl)
      );
    }
    
@@ -1283,7 +1314,20 @@ async function reconstructMetaFromComponents(userUUID, metaId, ttl = META_TTL, o
      if (componentName === 'basic') return; // Already handled
      
      if (componentName === 'poster') {
-       reconstructedMeta.poster = data.poster;
+       // Apply RPDB logic during reconstruction if enabled
+       // Use module-level context to get accurate RPDB state
+       const rpdbEnabled = currentRequestContext.catalogConfig?.enableRPDB !== false;
+       const host = process.env.HOST_NAME.startsWith('http')
+         ? process.env.HOST_NAME
+         : `https://${process.env.HOST_NAME}`;
+       
+       if (config.apiKeys?.rpdb && rpdbEnabled && reconstructedMeta.id) {
+         // Apply RPDB proxy to cached poster
+         const language = config.language || 'en-US';
+         reconstructedMeta.poster = `${host}/poster/${reconstructedMeta.type}/${reconstructedMeta.id}?fallback=${encodeURIComponent(data.poster)}&lang=${language}&key=${config.apiKeys.rpdb}`;
+       } else {
+         reconstructedMeta.poster = data.poster;
+       }
      } else if (componentName === 'background') {
        reconstructedMeta.background = data.background;
      } else if (componentName === 'logo') {
