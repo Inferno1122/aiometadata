@@ -84,6 +84,38 @@ class ComprehensiveCatalogWarmer {
     }
   }
 
+  formatNextRunTime(nextRunTime) {
+    const date = new Date(nextRunTime);
+    const now = Date.now();
+    const diffMs = nextRunTime - now;
+    const diffMinutes = Math.round(diffMs / 60000);
+    const diffHours = Math.round(diffMs / 3600000);
+    
+    // Format local time
+    const localTime = date.toLocaleString('en-US', { 
+      year: 'numeric', 
+      month: '2-digit', 
+      day: '2-digit', 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      second: '2-digit',
+      hour12: false 
+    });
+    
+    // Calculate relative time
+    let relativeTime;
+    if (diffMinutes < 60) {
+      relativeTime = `in ${diffMinutes} minute${diffMinutes !== 1 ? 's' : ''}`;
+    } else if (diffHours < 24) {
+      relativeTime = `in ${diffHours} hour${diffHours !== 1 ? 's' : ''}`;
+    } else {
+      const diffDays = Math.round(diffHours / 24);
+      relativeTime = `in ${diffDays} day${diffDays !== 1 ? 's' : ''}`;
+    }
+    
+    return `${localTime} (${relativeTime})`;
+  }
+
   async delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -158,7 +190,7 @@ class ComprehensiveCatalogWarmer {
       
       const nextRunTime = Date.now() + (this.config.intervalHours * 60 * 60 * 1000);
       this.stats.nextRun = new Date(nextRunTime).toISOString();
-      this.log('debug', `Marked warmup complete for UUID ${uuid}, next run: ${this.stats.nextRun}`);
+      this.log('debug', `Marked warmup complete for UUID ${uuid}, next run: ${this.formatNextRunTime(nextRunTime)}`);
     } catch (error) {
       this.log('error', `Failed to mark warmup complete for UUID ${uuid}: ${error.message}`);
     }
@@ -441,24 +473,24 @@ class ComprehensiveCatalogWarmer {
   async runWarmup(force = false) {
     if (this.isRunning) {
       this.log('warn', 'Warmup already running, skipping');
-      return;
+      return false;
     }
 
     if (!this.config.enabled) {
       this.log('debug', 'Catalog warming is disabled');
-      return;
+      return false;
     }
 
     if (!this.config.uuids || this.config.uuids.length === 0) {
       this.log('error', 'Cannot run comprehensive warmup: CACHE_WARMUP_UUIDS is not set');
-      return;
+      return false;
     }
 
     // Check if we should run (skip if force is true)
     if (!force) {
       const shouldRun = await this.shouldWarmup();
       if (!shouldRun) {
-        return;
+        return false;
       }
     } else {
       this.log('info', 'Force restart requested - bypassing interval check');
@@ -467,7 +499,7 @@ class ComprehensiveCatalogWarmer {
     // Check quiet hours
     if (this.isQuietHours()) {
       this.log('info', 'Skipping warmup during quiet hours');
-      return;
+      return false;
     }
 
     this.isRunning = true;
@@ -476,6 +508,13 @@ class ComprehensiveCatalogWarmer {
 
     try {
       this.log('success', `Starting comprehensive catalog warmup for ${this.config.uuids.length} UUID(s)...`);
+
+      // Reset overall stats for this run (don't accumulate from previous runs)
+      this.stats.totalCatalogs = 0;
+      this.stats.catalogsWarmed = 0;
+      this.stats.totalPages = 0;
+      this.stats.totalItems = 0;
+      this.stats.errors = [];
 
       // Process each UUID sequentially
       for (const uuid of this.config.uuids) {
@@ -548,9 +587,18 @@ class ComprehensiveCatalogWarmer {
       this.stats.lastRun = new Date().toISOString();
 
       this.log('success', `Warmup complete! Processed ${this.config.uuids.length} UUID(s), warmed ${this.stats.catalogsWarmed}/${this.stats.totalCatalogs} catalogs, ${this.stats.totalPages} pages, ${this.stats.totalItems} items in ${this.stats.duration}`);
+      
+      // Update nextRun time after successful warmup (for both scheduled and forced runs)
+      const intervalMs = this.config.intervalHours * 60 * 60 * 1000;
+      const nextRunTime = Date.now() + intervalMs;
+      this.stats.nextRun = new Date(nextRunTime).toISOString();
+      this.log('info', `Next warmup scheduled for ${this.formatNextRunTime(nextRunTime)}`);
+      
+      return true;
     } catch (error) {
       this.log('error', `Warmup failed: ${error.message}`);
       this.stats.errors.push({ global: error.message });
+      return false;
     } finally {
       this.isRunning = false;
       this.stats.isRunning = false;
@@ -602,21 +650,29 @@ class ComprehensiveCatalogWarmer {
   async scheduleNextWarmup() {
     // Run warmup and schedule the next one after it completes
     this.log('info', 'Starting warmup cycle...');
-    await this.runWarmup();
+    const didRun = await this.runWarmup();
     
-    // After warmup completes, calculate when to run next
-    const intervalMs = this.config.intervalHours * 60 * 60 * 1000;
-    this.log('info', `Scheduling next warmup in ${this.config.intervalHours} hours`);
+    // nextRun is already updated by runWarmup() if it executed
+    // Calculate delay until next scheduled run
+    let delayMs;
+    if (this.stats.nextRun) {
+      // Calculate delay based on the scheduled nextRun time
+      const nextRunTime = new Date(this.stats.nextRun).getTime();
+      const now = Date.now();
+      delayMs = Math.max(0, nextRunTime - now);
+      
+      const delayMinutes = Math.round(delayMs / 60000);
+      this.log('info', `Next check scheduled in ${delayMinutes} minutes`);
+    } else {
+      // Fallback to interval if nextRun is not set
+      delayMs = this.config.intervalHours * 60 * 60 * 1000;
+      this.log('info', `Next check scheduled in ${this.config.intervalHours} hours`);
+    }
     
-    // Schedule the next warmup to occur after the interval
+    // Schedule the next check based on calculated delay
     setTimeout(async () => {
       await this.scheduleNextWarmup();
-    }, intervalMs);
-    
-    // Calculate and log when the next run will occur
-    const nextRunTime = Date.now() + intervalMs;
-    this.stats.nextRun = new Date(nextRunTime).toISOString();
-    this.log('success', `Next warmup scheduled for ${this.stats.nextRun}`);
+    }, delayMs);
   }
 
   async getStats() {
@@ -632,6 +688,59 @@ class ComprehensiveCatalogWarmer {
             const parsedStats = JSON.parse(persistedStats);
             this.stats.uuidStats[uuid] = parsedStats;
           }
+        }
+        
+        // Aggregate totals from per-UUID stats
+        let totalCatalogs = 0;
+        let catalogsWarmed = 0;
+        let totalPages = 0;
+        let totalItems = 0;
+        
+        for (const uuid of this.config.uuids) {
+          const uuidStats = this.stats.uuidStats[uuid];
+          if (uuidStats) {
+            totalCatalogs += uuidStats.totalCatalogs || 0;
+            catalogsWarmed += uuidStats.catalogsWarmed || 0;
+            totalPages += uuidStats.totalPages || 0;
+            totalItems += uuidStats.totalItems || 0;
+          }
+        }
+        
+        this.stats.totalCatalogs = totalCatalogs;
+        this.stats.catalogsWarmed = catalogsWarmed;
+        this.stats.totalPages = totalPages;
+        this.stats.totalItems = totalItems;
+      }
+      
+      // Recalculate nextRun if not set or if it has passed
+      if (!this.stats.nextRun || new Date(this.stats.nextRun) < new Date()) {
+        let earliestNextRun = null;
+        let latestLastRun = null;
+        
+        for (const uuid of this.config.uuids) {
+          const lastWarmupKey = `catalog-warmup:last-run:${uuid}`;
+          const lastRun = await redis.get(lastWarmupKey);
+          
+          if (lastRun) {
+            const lastRunTime = parseInt(lastRun);
+            const nextRunTime = lastRunTime + (this.config.intervalHours * 60 * 60 * 1000);
+            
+            if (!earliestNextRun || nextRunTime < earliestNextRun) {
+              earliestNextRun = nextRunTime;
+            }
+            
+            if (!latestLastRun || lastRunTime > latestLastRun) {
+              latestLastRun = lastRunTime;
+            }
+          }
+        }
+        
+        if (earliestNextRun) {
+          this.stats.nextRun = new Date(earliestNextRun).toISOString();
+        }
+        
+        if (latestLastRun) {
+          this.stats.lastRun = new Date(latestLastRun).toISOString();
         }
       }
     } catch (error) {

@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.6.4](https://github.com/cedya77/aiometadata/compare/v1.6.3...v1.6.4) (2025-11-04)
+
+
+### Bug Fixes
+
+* **anime meta & fanart:** fix self-inflicted initialization issue and re apply langugage selection logic to fanart ([af1b8ec](https://github.com/cedya77/aiometadata/commit/af1b8ec459c498681087a7124a2bf71413e9dd16))
+* finetune person's search logic further ([#99](https://github.com/cedya77/aiometadata/issues/99)) ([5df4cc6](https://github.com/cedya77/aiometadata/commit/5df4cc6a29a2d8adb43ba611f48aefcd404b9e39))
+
+## [1.6.3](https://github.com/cedya77/aiometadata/compare/v1.6.2...v1.6.3) (2025-11-04)
+
+
+### Bug Fixes
+
+* **anime movie:** adapt ids to new anime movie id mapping ([0ca12cc](https://github.com/cedya77/aiometadata/commit/0ca12cc5832f5c50662ccf73b78cba101d1c4ada))
+* **fanart:** adapt changes from fanart api ([8b3d006](https://github.com/cedya77/aiometadata/commit/8b3d006d3e60da1b3aee99bd9b193c2f1a288324))
+
+## [1.6.2](https://github.com/cedya77/aiometadata/compare/v1.6.1...v1.6.2) (2025-11-03)
+
+
+### Bug Fixes
+
+* **anime meta:** issue with anime override & filter out null names from cast/crew ([f5e633d](https://github.com/cedya77/aiometadata/commit/f5e633d1135d2d1b925797379fe27134199278db))
+
+## [1.6.1](https://github.com/cedya77/aiometadata/compare/v1.6.0...v1.6.1) (2025-11-03)
+
+
+### Bug Fixes
+
+* **meta:** anime ID provider check logic ([17c7828](https://github.com/cedya77/aiometadata/commit/17c7828051d208062c873f41c23901e31e9d9ae0))
+
+## [1.6.0](https://github.com/cedya77/aiometadata/compare/v1.5.0...v1.6.0) (2025-11-03)
+
+
+### Features
+
+* add clear expire keys button to dash ([2c17c48](https://github.com/cedya77/aiometadata/commit/2c17c481c48aef457ebcec48ade6b60bd3c76c68))
+* Add granular RPDB control, anime movie mappings, and catalog warmer fixes ([3bef3b1](https://github.com/cedya77/aiometadata/commit/3bef3b197726789a46aba8d0332e674198053ef5))
+
+
+### Bug Fixes
+
+* missing 'None' genre option for tmdb.popular when showInHome is false ([2c17c48](https://github.com/cedya77/aiometadata/commit/2c17c481c48aef457ebcec48ade6b60bd3c76c68))
+* use CATALOG_LIST_ITEMS_SIZE for MDBList catalogs in warmer ([5527d74](https://github.com/cedya77/aiometadata/commit/5527d748c474eeeb3fad613fed5ad9961b93789b))
+
 ## [1.5.0](https://github.com/cedya77/aiometadata/compare/v1.4.1...v1.5.0) (2025-10-28)
 
 

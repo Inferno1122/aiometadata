@@ -213,11 +213,12 @@ async function performKitsuSearch(type, query, language, config, page = 1) {
       'NC-17': 'R18',
       'NONE': 'none'
     };
+    const desiredTvTypes = config.mal?.useImdbIdForCatalogAndSearch ?  new Set(['tv', 'ona']) : new Set(['tv', 'ova', 'ona', 'tv special']);
     const searchResults = await kitsu.searchByName(
       query,
       type === 'movie'
         ? ['movie']
-        : ['tv','ona', 'ova', 'special'],
+        : desiredTvTypes,
         KITSU_RATING_MAP[config.ageRating.toUpperCase()]
     );
     
@@ -234,28 +235,34 @@ async function performKitsuSearch(type, query, language, config, page = 1) {
         try {
           const kitsuId = item.id;
           const mapping = await idMapper.getMappingByKitsuId(kitsuId);
-          let imdbId = mapping?.imdb_id;
           const malId = mapping?.mal_id;
+          let tmdbId = type === 'movie' ? idMapper.getTraktAnimeMovieByMalId(malId)?.externals.tmdb : mapping?.themoviedb_id;
+          let imdbId = type === 'movie' ? idMapper.getTraktAnimeMovieByMalId(malId)?.externals.imdb : mapping?.imdb_id;
+          let tvdbId = type === 'movie' ? (await wikiMappings.getByImdbId(imdbId, type))?.tvdbId || null : mapping?.thetvdb_id;
+
           const imdbRating = imdbId ? await getImdbRating(imdbId, type) : 'N/A';
-          let id = imdbId;
+          let id = imdbId || `kitsu:${kitsuId}`;
           const preferredProvider = config.providers?.anime || 'mal';
           if(preferredProvider === 'kitsu') {
             id = `kitsu:${kitsuId}`;
           } else if(preferredProvider === 'mal') {
             id = `mal:${mapping?.mal_id}`;
           } 
+          if((config.mal?.useImdbIdForCatalogAndSearch && type === 'series')){
+            return (await cacheWrapMetaSmart(config.userUUID, id, async () => {
+              const { getMeta } = await import("../lib/getMeta");
+              return await getMeta(type, language, `kitsu:${kitsuId}`, config, config.userUUID, false);
+            }, undefined, {enableErrorCaching: true, maxRetries: 2}, type, false))?.meta || null;
+          }
           
           
-          const background = await Utils.getAnimeBg({malId: mapping?.mal_id, imdbId: imdbId, tvdbId: mapping?.thetvdb_id, tmdbId: mapping?.themoviedb_id, mediaType: type === 'movie' ? 'movie' : 'series', malPosterUrl: item.coverImage?.original}, config);
-          const poster = await Utils.getAnimePoster({malId: mapping?.mal_id, imdbId: imdbId, tvdbId: mapping?.thetvdb_id, tmdbId: mapping?.themoviedb_id, mediaType: type === 'movie' ? 'movie' : 'series', malPosterUrl: item.posterImage?.original}, config);
-          const logo = type === 'movie' ? mapping?.themoviedb_id ? await moviedb.getTmdbMovieLogo(mapping?.themoviedb_id, config) : null : await Utils.getAnimeLogo({malId: mapping?.mal_id, imdbId: imdbId, tvdbId: mapping?.thetvdb_id, tmdbId: mapping?.themoviedb_id, mediaType: type === 'movie' ? 'movie' : 'series'}, config);
+          const background = mapping?.mal_id ? await Utils.getAnimeBg({malId: mapping?.mal_id, imdbId: imdbId, tvdbId: tvdbId, tmdbId: tmdbId, mediaType: type === 'movie' ? 'movie' : 'series', malPosterUrl: item.coverImage?.original}, config) : item.coverImage?.original;
+          const poster = mapping?.mal_id ? await Utils.getAnimePoster({malId: mapping?.mal_id, imdbId: imdbId, tvdbId: tvdbId, tmdbId: tmdbId, mediaType: type === 'movie' ? 'movie' : 'series', malPosterUrl: item.posterImage?.original}, config) : item.posterImage?.original;
+          const logo = type === 'movie' ? tmdbId ? await moviedb.getTmdbMovieLogo(tmdbId, config) : null : await Utils.getAnimeLogo({malId: mapping?.mal_id, imdbId: imdbId, tvdbId: tvdbId, tmdbId: tmdbId, mediaType: type === 'movie' ? 'movie' : 'series'}, config);
           
           // Apply RPDB for series (non-movies)
           let finalPoster = poster || `${host}/missing_poster.png`;
           if (config.apiKeys?.rpdb && isRPDBEnabled(config)) {
-            const tmdbId = type === 'movie' ? idMapper.getTraktAnimeMovieByMalId(malId)?.externals.tmdb : mapping?.themoviedb_id;
-            imdbId = type === 'movie' ? idMapper.getTraktAnimeMovieByMalId(malId)?.externals.imdb : imdbId;
-            const tvdbId = type === 'movie' ? (await wikiMappings.getByImdbId(imdbId, type))?.tvdbId || null : mapping?.thetvdb_id;
             let proxyId = null;
             if (imdbId) {
               proxyId = imdbId;
@@ -269,12 +276,6 @@ async function performKitsuSearch(type, query, language, config, page = 1) {
             }
           }
           
-          if((config.mal?.useImdbIdForCatalogAndSearch && type === 'series')){
-            return (await cacheWrapMetaSmart(config.userUUID, id, async () => {
-              const { getMeta } = await import("../lib/getMeta");
-              return await getMeta(type, language, `kitsu:${kitsuId}`, config, config.userUUID, false);
-            }, undefined, {enableErrorCaching: true, maxRetries: 2}, type, false))?.meta || null;
-          }
           return {
             id: `kitsu:${kitsuId}`,
             type: type === 'movie' ? 'movie' : 'series',
@@ -364,6 +365,13 @@ async function performTmdbSearch(type, query, language, config, searchPersons = 
                 
                 logger.debug(`Person found: ${topPerson.name} (popularity: ${topPerson.popularity || 0})`);
                 
+                // Early exit: skip if person has very low popularity or no profile picture
+                // This avoids wasting an API call on likely junk results
+                if ((topPerson.popularity || 0) < 1.0 || !topPerson.profile_path) {
+                  logger.debug(`Skipping person ${topPerson.name} - too low popularity or missing profile picture`);
+                  return [];
+                }
+                
                 // Fetch full person details to get also_known_as names
                 const personDetails = await moviedb.personInfo({ id: topPerson.id, language }, config);
                 
@@ -373,28 +381,46 @@ async function performTmdbSearch(type, query, language, config, searchPersons = 
                 
                 // Check if query matches the primary name
                 const isExactMatch = personNameNormalized === queryNormalized;
-                const isContainedWithPopularity = personNameNormalized.includes(queryNormalized) && (topPerson.popularity || 0) > 3;
+                const isContainedMatch = personNameNormalized.includes(queryNormalized);
                 
                 // Check if query matches any of the also_known_as names
-                // Aliases must ALWAYS pass the popularity check (no bypass for exact matches)
                 const matchesAlsoKnownAs = alsoKnownAs.some(aka => {
                   const akaNormalized = normalizeForComparison(aka);
-                  const isMatch = akaNormalized === queryNormalized || akaNormalized.includes(queryNormalized);
-                  
-                  if (!isMatch) return false;
-                  
-                  // For alias matches, ALWAYS require minimum popularity
-                  // This prevents low-popularity people with famous aliases (e.g., "Superman") from hijacking searches
-                  const minPopularityForAlias = 3.0;
-                  return (topPerson.popularity || 0) >= minPopularityForAlias;
+                  return akaNormalized === queryNormalized || akaNormalized.includes(queryNormalized);
                 });
                 
-                if (!isExactMatch && !isContainedWithPopularity && !matchesAlsoKnownAs) {
-                  logger.debug(`Skipping person ${topPerson.name} - query "${query}" doesn't match name or also_known_as (${alsoKnownAs.join(', ')}) with sufficient popularity (${topPerson.popularity || 0} < 3.0)`);
+                if (!isExactMatch && !isContainedMatch && !matchesAlsoKnownAs) {
+                  logger.debug(`Skipping person ${topPerson.name} - query "${query}" doesn't match name or also_known_as (${alsoKnownAs.join(', ')})`);
                   return [];
                 }
                 
-                logger.debug(`Person match confirmed: ${topPerson.name} (also known as: ${alsoKnownAs.join(', ')})`);
+                // Validate person through their work quality (from known_for in search results)
+                const knownFor = topPerson.known_for || [];
+                const hasHighQualityWork = knownFor.some(work => {
+                  const votes = work.vote_count || 0;
+                  return votes >= 5000;
+                });
+                
+                const minPopularityExact = 2.5;
+                const minPopularityAlias = 4.0;
+                const personPopularity = topPerson.popularity || 0;
+                
+                // If person has high-quality work (>5000 votes) and at least 1.0 popularity, accept them
+                if (hasHighQualityWork && personPopularity >= 1.0) {
+                  logger.debug(`Person match confirmed: ${topPerson.name} (validated through high-quality work)`);
+                } else {
+                  // Otherwise, require minimum popularity
+                  const meetsPopularityThreshold = 
+                    (isExactMatch && personPopularity >= minPopularityExact) ||
+                    (isContainedMatch && personPopularity >= minPopularityExact) ||
+                    (matchesAlsoKnownAs && personPopularity >= minPopularityAlias);
+                  
+                  if (!meetsPopularityThreshold) {
+                    logger.debug(`Skipping person ${topPerson.name} - insufficient popularity (${personPopularity}) and no high-quality work`);
+                    return [];
+                  }
+                  logger.debug(`Person match confirmed: ${topPerson.name} (popularity: ${personPopularity})`);
+                }
                 
                 const credits = type === 'movie'
                     ? await moviedb.personMovieCredits({ id: topPerson.id, language }, config)
