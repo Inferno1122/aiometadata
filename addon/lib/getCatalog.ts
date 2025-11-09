@@ -151,7 +151,10 @@ async function getCatalog(type: string, language: string, page: number, id: stri
       return { metas: [] };
     }
   } catch (error: any) {
-    logger.error(`Error in getCatalog router for id=${id}, type=${type}:`, error.message);
+    const errorLine = error.stack?.split('\n')[1]?.trim() || 'unknown';
+    logger.error(`Error in getCatalog router for id=${id}, type=${type}: ${error.message}`);
+    logger.error(`Error at: ${errorLine}`);
+    logger.error(`Full stack trace:`, error.stack);
     return { metas: [] };
   }
 }
@@ -546,7 +549,8 @@ async function getStremThruCatalog(type: string, catalogId: string, genre: strin
     
     // --- Dynamic pagination ---
     const pageSize = parseInt(process.env.CATALOG_LIST_ITEMS_SIZE || '20');
-    const stremThruBatchSize = 100; // fixed backend limit
+    // Use catalog-specific page size if configured, otherwise default to 100
+    const stremThruBatchSize = userCatalog.pageSize || 100;
     const globalItemIndex = (page - 1) * pageSize;
 
     const batchesNeeded = Math.ceil((globalItemIndex % stremThruBatchSize + pageSize) / stremThruBatchSize);
@@ -615,7 +619,10 @@ async function getStremThruCatalog(type: string, catalogId: string, genre: strin
     return metas;
 
   } catch (err: any) {
-    logger.error(`[StremThru] Error processing catalog ${catalogId}:`, err.message);
+    const errorLine = err.stack?.split('\n')[1]?.trim() || 'unknown';
+    logger.error(`[StremThru] Error processing catalog ${catalogId}: ${err.message}`);
+    logger.error(`Error at: ${errorLine}`);
+    logger.error(`Full stack trace:`, err.stack);
     return [];
   }
 }

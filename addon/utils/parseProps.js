@@ -379,7 +379,8 @@ function parseMedia(el, type, genreList = [], config = {}) {
 
   if(el.translations){
     el.overview = processOverviewTranslations(el.translations, config.language, el.overview);
-    name = processTitleTranslations(el.translations, config.language, name, type);
+    const originalTitle = type === 'movie' ? el.original_title : el.original_name;
+    name = processTitleTranslations(el.translations, config.language, name, type, el.original_language, originalTitle);
   }
 
   return {
@@ -626,7 +627,12 @@ function processOverviewTranslations(translations, language, overview) {
   return overview;
 }
 
-function processTitleTranslations(translations, language, title, type) {
+function processTitleTranslations(translations, language, title, type, originalLanguage = null, originalTitle = null) {
+  // Extract base language code from user's language (e.g., "pl-PL" -> "pl", "en-US" -> "en")
+  const baseLanguage = language ? language.split('-')[0].toLowerCase() : null;
+  // Check if user's language matches the original language
+  const languagesMatch = originalLanguage && baseLanguage && originalLanguage.toLowerCase() === baseLanguage;
+  
   // Handle title fallback for pt-PT language
   if(language === 'pt-PT'){
     let translation = tmdb.getTranslations(translations, 'pt-PT');
@@ -637,9 +643,17 @@ function processTitleTranslations(translations, language, title, type) {
       if(translation && (translation.data.title || translation.data.name) && (translation.data.title || translation.data.name).trim() !== ''){
         title = type === 'movie' ? translation.data.title : translation.data.name;
       } else {
-        translation = tmdb.getTranslations(translations, 'en-US');
-        if(translation && (translation.data.title || translation.data.name) && (translation.data.title || translation.data.name).trim() !== ''){
-          title = type === 'movie' ? translation.data.title : translation.data.name;
+        // If languages match and no translation found, use original title instead of English fallback
+        if(languagesMatch && originalTitle && originalTitle.trim() !== ''){
+          title = originalTitle;
+        } else {
+          translation = tmdb.getTranslations(translations, 'en-US');
+          if(translation && (translation.data.title || translation.data.name) && (translation.data.title || translation.data.name).trim() !== ''){
+            title = type === 'movie' ? translation.data.title : translation.data.name;
+          } else if(languagesMatch && originalTitle && originalTitle.trim() !== ''){
+            // Fallback to original title if English also not found
+            title = originalTitle;
+          }
         }
       }
     }
@@ -648,9 +662,17 @@ function processTitleTranslations(translations, language, title, type) {
     if(translation && (translation.data.title || translation.data.name) && (translation.data.title || translation.data.name).trim() !== ''){
       title = type === 'movie' ? translation.data.title : translation.data.name;
     } else {
-      translation = tmdb.getTranslations(translations, 'en-US');
-      if(translation && (translation.data.title || translation.data.name) && (translation.data.title || translation.data.name).trim() !== ''){
-        title = type === 'movie' ? translation.data.title : translation.data.name;
+      // If languages match and no translation found, use original title instead of English fallback
+      if(languagesMatch && originalTitle && originalTitle.trim() !== ''){
+        title = originalTitle;
+      } else {
+        translation = tmdb.getTranslations(translations, 'en-US');
+        if(translation && (translation.data.title || translation.data.name) && (translation.data.title || translation.data.name).trim() !== ''){
+          title = type === 'movie' ? translation.data.title : translation.data.name;
+        } else if(languagesMatch && originalTitle && originalTitle.trim() !== ''){
+          // Fallback to original title if English also not found
+          title = originalTitle;
+        }
       }
     }
   }
@@ -917,6 +939,10 @@ function parseAnimeCreditsLink(characterData, userUUID, castCount) {
 }
 
 function getTmdbMovieCertificationForCountry(certificationsData) {
+  if (!certificationsData) {
+    return null;
+  }
+  
   const countryData = certificationsData.results?.find(r => r.iso_3166_1 === 'US');
   if (!countryData?.release_dates) return null;
   
@@ -943,6 +969,10 @@ function getTmdbMovieCertificationForCountry(certificationsData) {
 }
 
 function getTmdbTvCertificationForCountry(certificationsData) {
+  if (!certificationsData) {
+    return null;
+  }
+  
   const countryData = certificationsData.results?.find(r => r.iso_3166_1 === 'US');
   if (!countryData?.rating) return null;
   
@@ -1410,7 +1440,7 @@ async function getAnimePoster({ malId, imdbId, tvdbId, tmdbId, malPosterUrl, med
           : await tvdb.getSeriesPoster(tvdbId, config);
 
       if (tvdbPoster) {
-        //console.log(`[getAnimePoster] Found TVDB poster for MAL ID: ${malId} (TVDB ID: ${tvdbId}, Type: ${mediaType})`);
+        console.log(`[getAnimePoster] Found TVDB poster for MAL ID: ${malId} (TVDB ID: ${tvdbId}, Type: ${mediaType}) - ${tvdbPoster}`);
         return tvdbPoster;
       }
     } catch (error) {
@@ -1896,7 +1926,7 @@ async function parseAnimeCatalogMetaBatch(animes, config, language) {
         name: anime.title_english || anime.title
       });
     }
-    if((config.mal?.useImdbIdForCatalogAndSearch && stremioType === 'series')){
+    if((config.mal?.useImdbIdForCatalogAndSearch && imdbId)){
       return (await cacheWrapMetaSmart(config.userUUID, id, async () => {
         const { getMeta } = await import("../lib/getMeta.js");
         return await getMeta(stremioType, language, `mal:${malId}`, config, config.userUUID, false);
@@ -2908,7 +2938,9 @@ async function getAnimePosterUrl(malId, mapping, stremioType, config, language, 
   if (useTvdb && tvdbId) {
     try {
       // Use the appropriate TVDB function based on media type
-      const tvdbPoster = await tvdb.getSeriesPoster(tvdbId, config);
+      const tvdbPoster = stremioType === 'movie'
+        ? await tvdb.getMoviePoster(tvdbId, config)
+        : await tvdb.getSeriesPoster(tvdbId, config);
       
       if (tvdbPoster) {
         //console.log(`[parseAnimeCatalogMetaBatch] Using TVDB poster for MAL ID: ${malId} (TVDB ID: ${mapping.thetvdb_id}, Type: ${stremioType})`);

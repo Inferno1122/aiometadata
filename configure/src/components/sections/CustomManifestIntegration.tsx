@@ -38,10 +38,31 @@ export function CustomManifestIntegration({ isOpen, onClose }: CustomManifestInt
   const [manifest, setManifest] = useState<CustomManifest | null>(null);
   const [selectedCatalogs, setSelectedCatalogs] = useState<Set<string>>(new Set());
   const [defaultCacheTTL, setDefaultCacheTTL] = useState<number>(catalogTTL);
+  const [defaultPageSize, setDefaultPageSize] = useState<number>(100);
 
   // Get currently imported custom manifests
   const currentCustomCatalogs = config.catalogs.filter(c => c.id.startsWith("custom."));
   
+  const isInternalDockerUrl = (url: string): boolean => {
+    try {
+      const urlObj = new URL(url);
+      // Check for internal Docker network patterns:
+      // - http:// (not https) with service name (no dots before port)
+      // - localhost
+      // - 127.0.0.1
+      // - Internal network IPs (10.x, 172.16-31.x, 192.168.x)
+      const hostname = urlObj.hostname;
+      const isHttp = urlObj.protocol === 'http:';
+      const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+      const isInternalIP = /^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.)/.test(hostname);
+      const isServiceName = isHttp && !hostname.includes('.') && hostname !== 'localhost';
+      
+      return isLocalhost || isInternalIP || isServiceName;
+    } catch {
+      return false;
+    }
+  };
+
   const fetchManifest = useCallback(async () => {
     if (!manifestUrl.trim()) {
       toast.error("Please enter a manifest URL.");
@@ -50,7 +71,12 @@ export function CustomManifestIntegration({ isOpen, onClose }: CustomManifestInt
 
     setIsLoading(true);
     try {
-      const response = await fetch(manifestUrl);
+      const useProxy = isInternalDockerUrl(manifestUrl);
+      const fetchUrl = useProxy 
+        ? `/api/proxy-manifest?url=${encodeURIComponent(manifestUrl)}`
+        : manifestUrl;
+
+      const response = await fetch(fetchUrl);
       if (!response.ok) {
         throw new Error(`Failed to fetch manifest (Status: ${response.status})`);
       }
@@ -153,6 +179,7 @@ export function CustomManifestIntegration({ isOpen, onClose }: CustomManifestInt
               sourceUrl: catalogUrl, // Store the actual catalog URL
               genres: catalog.genres || [], // Store genres from manifest
               cacheTTL: defaultCacheTTL, // Add custom TTL support
+              pageSize: defaultPageSize, // Add page size support
               enableRPDB: true,
               manifestData: { 
                 ...catalog, 
@@ -264,6 +291,27 @@ export function CustomManifestIntegration({ isOpen, onClose }: CustomManifestInt
                 </div>
                 <p className="text-xs text-muted-foreground">
                   How long to cache newly added catalogs before refreshing. Range: 5 minutes to 7 days.
+                </p>
+              </div>
+
+              {/* Page Size Configuration */}
+              <div className="space-y-2">
+                <Label htmlFor="default-page-size">Default Page Size</Label>
+                <div className="flex items-center space-x-2">
+                  <input
+                    id="default-page-size"
+                    type="number"
+                    value={defaultPageSize}
+                    onChange={(e) => setDefaultPageSize(parseInt(e.target.value) || 100)}
+                    min="1"
+                    max="1000"
+                    step="1"
+                    className="flex-1 px-3 py-2 border border-input bg-background rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
+                    placeholder="100"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Number of items per page for newly added catalogs. Default: 100. This should match the imported addon's page size for accurate pagination.
                 </p>
               </div>
 

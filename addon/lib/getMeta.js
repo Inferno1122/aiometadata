@@ -86,7 +86,12 @@ const host = process.env.HOST_NAME.startsWith('http')
 // --- Main Orchestrator ---
 async function getMeta(type, language, stremioId, config = {}, userUUID, includeVideos = true) {
   try {
-
+    // Validate inputs
+    if (!stremioId || typeof stremioId !== 'string') {
+      logger.error(`[Meta] Invalid stremioId: ${stremioId}`);
+      return { meta: null };
+    }
+    
     // --- Handle custom ID prefixes (e.g., "tun_tt6128300") ---
     const isTraktUpNextId = stremioId.startsWith('tun_');
     if (isTraktUpNextId) {
@@ -176,8 +181,14 @@ async function getMeta(type, language, stremioId, config = {}, userUUID, include
         break;
     }
 
-    if(isTraktUpNextId && !includeVideos) {
-      if(meta.id.startsWith('tt')) {
+    // Check if meta was successfully retrieved
+    if (!meta) {
+      logger.warn(`[Meta] No metadata found for ${stremioId}`);
+      return { meta: null };
+    }
+
+    if(isTraktUpNextId) {
+      if(meta.id && meta.id.startsWith('tt')) {
         meta.id = `tun_${meta.id}`;
       }
     }
@@ -507,11 +518,13 @@ async function getMovieMeta(stremioId, preferredProvider, language, config, user
     try {
       const langCode = language.split('-')[0];
       const imageLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
+      const videoLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
       const movieData = await moviedb.movieInfo({ 
         id: allIds.tmdbId, 
         language, 
         append_to_response: "videos,credits,external_ids,images,translations,watch/providers,release_dates", 
-        include_image_language: imageLanguages 
+        include_image_language: imageLanguages,
+        include_video_language: videoLanguages
       }, config);
       
       if (movieData) {
@@ -562,11 +575,13 @@ async function getSeriesMeta(preferredProvider, stremioId, language, config, use
     try {
       const langCode = language.split('-')[0];
       const imageLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
+      const videoLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
       const seriesData = await moviedb.tvInfo({ 
         id: allIds.tmdbId, 
         language, 
         append_to_response: "videos,credits,external_ids,images,translations,watch/providers,content_ratings", 
-        include_image_language: imageLanguages 
+        include_image_language: imageLanguages,
+        include_video_language: videoLanguages
       }, config);
       
       if (seriesData) {
@@ -575,7 +590,10 @@ async function getSeriesMeta(preferredProvider, stremioId, language, config, use
         logger.warn(`[SeriesMeta] TMDB returned null data for ${allIds.tmdbId}`);
       }
     } catch (e) {
+      const errorLine = e.stack?.split('\n')[1]?.trim() || 'unknown';
       logger.warn(`[SeriesMeta] TMDB failed: ${e.message}`);
+      logger.warn(`[SeriesMeta] TMDB error at: ${errorLine}`);
+      logger.warn(`[SeriesMeta] TMDB full stack trace:`, e.stack);
     }
   }
 
@@ -635,11 +653,13 @@ async function getSeriesMeta(preferredProvider, stremioId, language, config, use
     try {
       const langCode = language.split('-')[0];
       const imageLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
+      const videoLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
       const seriesData = await moviedb.tvInfo({ 
         id, 
         language, 
         append_to_response: "videos,credits,external_ids,images,translations,watch/providers", 
-        include_image_language: imageLanguages 
+        include_image_language: imageLanguages,
+        include_video_language: videoLanguages
       }, config);
       
       if (seriesData) {
@@ -648,7 +668,10 @@ async function getSeriesMeta(preferredProvider, stremioId, language, config, use
         logger.warn(`[SeriesMeta] TMDB by ID returned null data for ${id}`);
       }
     } catch (e) {
+      const errorLine = e.stack?.split('\n')[1]?.trim() || 'unknown';
       logger.warn(`[SeriesMeta] TMDB by ID failed: ${e.message}`);
+      logger.warn(`[SeriesMeta] TMDB by ID error at: ${errorLine}`);
+      logger.warn(`[SeriesMeta] TMDB by ID full stack trace:`, e.stack);
     }
   } else if (provider === 'imdb' && id) {
     try {
@@ -691,13 +714,8 @@ async function getAnimeMeta(preferredProvider, stremioId, language, config, user
     if(allIds?.malId) {
       allIds.imdbId = idMapper.getTraktAnimeMovieByMalId(allIds.malId)?.externals.imdb;
       allIds.tmdbId = idMapper.getTraktAnimeMovieByMalId(allIds.malId)?.externals.tmdb;
-      allIds.tvdbId =  (await wikiMappings.getByImdbId(allIds.imdbId, type))?.tvdbId || null;
+      allIds.tvdbId =  (await wikiMappings.getByImdbId(allIds.imdbId, 'movie'))?.tvdbId || null;
 
-    } else {
-      allIds.tvdbId = null
-      allIds.tvmazeId = null
-      allIds.imdbId = null
-      allIds.tmdbId = null
     }
   }
   // check if stremioId starts with one of the animeIdProviders
@@ -705,12 +723,13 @@ async function getAnimeMeta(preferredProvider, stremioId, language, config, user
       if (preferredProvider === 'tmdb' && allIds?.tmdbId) {
         const langCode = language.split('-')[0];
         const imageLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
+        const videoLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
         if (type === 'movie') {
           
-          const movieData = await moviedb.movieInfo({ id: allIds.tmdbId, language, append_to_response: "videos,credits,external_ids,images,translations,watch/providers", include_image_language: imageLanguages }, config);
+          const movieData = await moviedb.movieInfo({ id: allIds.tmdbId, language, append_to_response: "videos,credits,external_ids,images,translations,watch/providers", include_image_language: imageLanguages, include_video_language: videoLanguages }, config);
           return await buildTmdbMovieResponse(stremioId, movieData, language, config, userUUID, { allIds }, isAnime);
         } else {
-          const seriesData = await moviedb.tvInfo({ id: allIds.tmdbId, language, append_to_response: "videos,credits,external_ids,images,translations,watch/providers", include_image_language: imageLanguages }, config);
+          const seriesData = await moviedb.tvInfo({ id: allIds.tmdbId, language, append_to_response: "videos,credits,external_ids,images,translations,watch/providers", include_image_language: imageLanguages, include_video_language: videoLanguages }, config);
             return await buildTmdbSeriesResponse(stremioId, seriesData, language, config, userUUID, { allIds }, isAnime, includeVideos);
         }
       }
@@ -721,8 +740,16 @@ async function getAnimeMeta(preferredProvider, stremioId, language, config, user
               tvdb.getSeriesExtended(allIds.tvdbId, config),
               includeVideos ? tvdb.getSeriesEpisodes(allIds.tvdbId, language, config.tvdbSeasonType, config) : null
           ]);
-          return await buildTvdbSeriesResponse(stremioId, seriesData, episodes, language, config, userUUID, { allIds }, isAnime, includeVideos);
+          if(!seriesData) {
+            if(allIds?.imdbId) {
+              let imdbData = await imdb.getMetaFromImdb(allIds.imdbId, 'series');
+              return await buildImdbSeriesResponse(stremioId, imdbData, { allIds }, config, isAnime);
+            }
+          } else {
+            return await buildTvdbSeriesResponse(stremioId, seriesData, episodes, language, config, userUUID, { allIds }, isAnime, includeVideos);
+          }
         } else if (type === 'movie') {
+          logger.info(`[AnimeMeta] Attempting preferred provider TVDB with ID: ${allIds.tvdbId}`);
           const movieData = await tvdb.getMovieExtended(allIds.tvdbId, config);
           if(!movieData) {
             if(allIds?.imdbId) {
@@ -888,9 +915,21 @@ async function buildImdbSeriesResponse(stremioId, imdbData, enrichmentData = {},
     imdbData.description = Utils.addMetaProviderAttribution(imdbData.description, 'IMDB', config);
   }
   if (tmdbId){
-    const seriesData = await moviedb.tvInfo({ id: tmdbId, language: config.language, append_to_response: "content_ratings" }, config);
+    const langCode = config.language.split('-')[0];
+    const videoLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
+    const seriesData = await moviedb.tvInfo({ id: tmdbId, language: config.language, append_to_response: "content_ratings,videos", include_video_language: videoLanguages }, config);
     imdbData.app_extras = imdbData.app_extras || {};
     imdbData.app_extras.certification = Utils.getTmdbTvCertificationForCountry(seriesData.content_ratings);
+    if (seriesData.videos) {
+      const allTrailers = Utils.parseTrailers(seriesData.videos);
+      const filteredTrailers = allTrailers.filter(trailer => trailer.lang === langCode);
+
+      // Intelligent fallback: user language -> English -> all trailers
+      const englishTrailers = allTrailers.filter(trailer => trailer.lang === 'en');
+      const finalTrailers = filteredTrailers.length > 0 ? filteredTrailers : (englishTrailers.length > 0 ? englishTrailers : allTrailers);
+
+      imdbData.trailers = finalTrailers;
+    }
   }
 
   return imdbData;
@@ -939,10 +978,26 @@ async function buildImdbMovieResponse(stremioId, imdbData, enrichmentData = {}, 
     imdbData.description = Utils.addMetaProviderAttribution(imdbData.description, 'IMDB', config);
   }
   if (tmdbId){
-    const movieData = await moviedb.movieInfo({ id: tmdbId, language: config.language, append_to_response: "release_dates" }, config);
+    const langCode = config.language.split('-')[0];
+    const videoLanguages = Array.from(new Set([langCode, 'en', 'null'])).join(',');
+    const movieData = await moviedb.movieInfo({ id: tmdbId, language: config.language, append_to_response: "release_dates,videos", include_video_language: videoLanguages }, config);
     imdbData.app_extras = imdbData.app_extras || {};
     imdbData.app_extras.releaseDates = movieData.release_dates;
     imdbData.app_extras.certification = Utils.getTmdbMovieCertificationForCountry(movieData.release_dates);
+    if (movieData.videos) {
+      const allTrailers = Utils.parseTrailers(movieData.videos);
+      const allTrailerStreams = Utils.parseTrailerStream(movieData.videos);
+      const filteredTrailers = allTrailers.filter(trailer => trailer.lang === langCode);
+      const filteredTrailerStreams = allTrailerStreams.filter(trailer => trailer.lang === langCode);
+
+      const englishTrailers = allTrailers.filter(trailer => trailer.lang === 'en');
+      const englishTrailerStreams = allTrailerStreams.filter(trailer => trailer.lang === 'en');
+      const finalTrailers = filteredTrailers.length > 0 ? filteredTrailers : (englishTrailers.length > 0 ? englishTrailers : allTrailers);
+      const finalTrailerStreams = filteredTrailerStreams.length > 0 ? filteredTrailerStreams : (englishTrailerStreams.length > 0 ? englishTrailerStreams : allTrailerStreams);
+
+      imdbData.trailers = finalTrailers;
+      imdbData.trailerStreams = finalTrailerStreams;
+    }
   }
 
   return imdbData;
@@ -965,13 +1020,13 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
   const imdbId = allIds?.imdbId;
   const tvdbId = allIds?.tvdbId;
   const castCount = config.castCount === 0 ? undefined : config.castCount;
-  
+  const langCode = language.split('-')[0];
   // Get artwork based on art provider preference
   const selectedPoster = Utils.selectTmdbImageByLang(images?.posters, config);
   const tmdbPosterUrl = selectedPoster?.file_path ? `https://image.tmdb.org/t/p/w600_and_h900_bestv2${selectedPoster?.file_path}` : poster_path ? `https://image.tmdb.org/t/p/w600_and_h900_bestv2${poster_path}` : `${host}/missing_poster.png`;
   const selectedBg = images?.backdrops?.find(b => b.iso_639_1 === 'xx')
     || images?.backdrops?.find(b => b.iso_639_1 === null)
-    || images?.backdrops?.find(b => b.iso_639_1 === language.split('-')[0])
+    || images?.backdrops?.find(b => b.iso_639_1 === langCode)
     || images?.backdrops?.[0];
   const tmdbBackgroundUrl = selectedBg?.file_path ? `https://image.tmdb.org/t/p/original${selectedBg?.file_path}` : backdrop_path ? `https://image.tmdb.org/t/p/original${backdrop_path}` : null;
   const selectedLogo = Utils.selectTmdbImageByLang(images?.logos, config);
@@ -1026,7 +1081,14 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
   const watchProviders = moviedb.getWatchProviders(movieData['watch/providers'], config);
   let overview = movieData.overview;
   overview = Utils.processOverviewTranslations(movieData.translations, language, overview);
-  finalTitle = Utils.processTitleTranslations(movieData.translations, language, title, 'movie');
+  finalTitle = Utils.processTitleTranslations(
+    movieData.translations,
+    language,
+    title,
+    'movie',
+    movieData.original_language,
+    movieData.original_title
+  );
   const certification = Utils.getTmdbMovieCertificationForCountry(movieData.release_dates);
   let links = Utils.buildLinks(imdbRating, imdbId, title, 'movie', movieData.genres, credits, language, castCount, userUUID);
   if (certification && config.displayAgeRating) {
@@ -1039,10 +1101,19 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
     links.unshift(certificationLink);
   }
 
-  logger.debug(`[TmdbMovieMeta] rpdb enabled: ${isRPDBEnabled(config)}`);
+  const allTrailers = Utils.parseTrailers(movieData.videos);
+  const allTrailerStreams = Utils.parseTrailerStream(movieData.videos);
+  const userLangTrailers = allTrailers.filter(trailer => trailer.lang === langCode);
+  const userLangTrailerStreams = allTrailerStreams.filter(trailer => trailer.lang === langCode);
+  const englishTrailers = allTrailers.filter(trailer => trailer.lang === 'en');
+  const englishTrailerStreams = allTrailerStreams.filter(trailer => trailer.lang === 'en');
+
+  // Prefer user's language, fallback to English, then all available
+  const finalTrailers = userLangTrailers.length > 0 ? userLangTrailers : (englishTrailers.length > 0 ? englishTrailers : allTrailers);
+  const finalTrailerStreams = userLangTrailerStreams.length > 0 ? userLangTrailerStreams : (englishTrailerStreams.length > 0 ? englishTrailerStreams : allTrailerStreams);
 
   return {
-    id: external_ids?.imdb_id || allIds?.imdbId || stremioId,
+    id: imdbId || stremioId,
     type: 'movie',
     description: Utils.addMetaProviderAttribution(overview, 'TMDB', config),
     name: finalTitle,
@@ -1060,9 +1131,8 @@ async function buildTmdbMovieResponse(stremioId, movieData, language, config, us
     poster: (config.apiKeys?.rpdb && isRPDBEnabled(config)) ? posterProxyUrl : poster,
     background: background,
     logo: processLogo(logoUrl),
-    // filter out trailers with lang !== language. if none left return full array,
-    trailers: Utils.parseTrailers(movieData.videos).filter(trailer => trailer.lang === language).length > 0 ? Utils.parseTrailers(movieData.videos).filter(trailer => trailer.lang === language) : Utils.parseTrailers(movieData.videos),
-    trailerStreams: Utils.parseTrailerStream(movieData.videos).filter(trailer => trailer.lang === language).length > 0 ? Utils.parseTrailerStream(movieData.videos).filter(trailer => trailer.lang === language) : Utils.parseTrailerStream(movieData.videos),
+    trailers: finalTrailers,
+    trailerStreams: finalTrailerStreams,
     links: links,
     behaviorHints: { defaultVideoId: kitsuId && idProvider === 'kitsu' ? `kitsu:${kitsuId}` : imdbId || stremioId, hasScheduledVideos: false },
     app_extras: { cast: Utils.parseCast(credits, castCount), directors: directorDetails, writers: writerDetails, watchProviders: watchProviders, releaseDates: movieData.release_dates, certification: certification }
@@ -1079,13 +1149,14 @@ async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, 
   const malId = allIds?.malId;
 
   const idProvider = config.providers?.anime_id_provider || 'imdb';
+  const langCode = language.split('-')[0];
 
   // Get artwork based on art provider preference
   const selectedPoster = Utils.selectTmdbImageByLang(images?.posters, config);
   const tmdbPosterUrl = selectedPoster?.file_path ? `https://image.tmdb.org/t/p/w600_and_h900_bestv2${selectedPoster?.file_path}` : poster_path ? `https://image.tmdb.org/t/p/w600_and_h900_bestv2${poster_path}` : `${host}/missing_poster.png`;
   const selectedBg = images?.backdrops?.find(b => b.iso_639_1 === 'xx')
     || images?.backdrops?.find(b => b.iso_639_1 === null)
-    || images?.backdrops?.find(b => b.iso_639_1 === language.split('-')[0])
+    || images?.backdrops?.find(b => b.iso_639_1 === langCode)
     || images?.backdrops?.[0];
   const tmdbBackgroundUrl = selectedBg?.file_path ? `https://image.tmdb.org/t/p/original${selectedBg?.file_path}` : backdrop_path ? `https://image.tmdb.org/t/p/original${backdrop_path}` : null;
   const selectedLogo = Utils.selectTmdbImageByLang(images?.logos, config);
@@ -1420,7 +1491,14 @@ async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, 
   let overview = seriesData.overview;
   overview = Utils.processOverviewTranslations(seriesData.translations, language, overview);
   let finalName = seriesData.name;
-  finalName = Utils.processTitleTranslations(seriesData.translations, language, finalName, 'series');
+  finalName = Utils.processTitleTranslations(
+    seriesData.translations,
+    language,
+    finalName,
+    'series',
+    seriesData.original_language,
+    seriesData.original_name
+  );
 
   // Build releaseInfo in format "first_year-last_year" or "first_year-" for ongoing series
   let releaseInfo = "";
@@ -1447,8 +1525,17 @@ async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, 
     links.unshift(certificationLink);
   }
 
+  // Priority: User's language -> English (most common) -> All trailers
+  const allTrailers = Utils.parseTrailers(trailers);
+  const userLangTrailers = allTrailers.filter(trailer => trailer.lang === langCode);
+  const englishTrailers = allTrailers.filter(trailer => trailer.lang === 'en');
+
+  // Prefer user's language, fallback to English, then all available
+  const finalTrailers = userLangTrailers.length > 0 ? userLangTrailers : (englishTrailers.length > 0 ? englishTrailers : allTrailers);
+
+  logger.info(`[TmdbSeriesMeta] imdbId: ${imdbId}, stremioId: ${stremioId}`);
   const meta = {
-    id: external_ids?.imdb_id || allIds?.imdbId || stremioId,
+    id: imdbId || stremioId,
     type: 'series',
     name: finalName,
     imdb_id: imdbId,
@@ -1463,7 +1550,7 @@ async function buildTmdbSeriesResponse(stremioId, seriesData, language, config, 
     poster: (config.apiKeys?.rpdb && isRPDBEnabled(config)) ? posterProxyUrl : poster,
     background: background,
     logo: logoUrl,
-    trailers: Utils.parseTrailers(trailers),
+    trailers: finalTrailers,
     links: links,
     videos: videos,
     behaviorHints: {
@@ -1524,7 +1611,7 @@ async function buildTvdbMovieResponse(stremioId, movieData, language, config, us
   const imdbRating = imdbRatingValue || "N/A";
   
   const fallbackPosterUrl = poster || tvdbPosterUrl || `${host}/missing_poster.png`;
-  const posterProxyUrl = `${host}/poster/movie/tvdb:${movieData.id}?fallback=${encodeURIComponent(fallbackPosterUrl)}&lang=${language}&key=${config.apiKeys?.rpdb}`;
+  const posterProxyUrl = `${host}/poster/movie/${imdbId}?fallback=${encodeURIComponent(fallbackPosterUrl)}&lang=${language}&key=${config.apiKeys?.rpdb}`;
   const movieCredits = {
     cast: (characters || [])
       .filter(c => c.peopleType === 'Actor')
@@ -1576,8 +1663,6 @@ async function buildTvdbMovieResponse(stremioId, movieData, language, config, us
   }
   console.log(`[TvdbMovieMeta] remoteIds:`, remoteIds);
 
-  imdbId = imdbId || remoteIds?.find(id => id.sourceName === 'IMDB')?.id 
-  tmdbId = tmdbId || remoteIds?.find(id => id.sourceName === 'TheMovieDB.com')?.id 
 
   let release_dates = null;
   let certification = null;
@@ -1887,7 +1972,6 @@ async function buildTvdbSeriesResponse(stremioId, tvdbShow, tvdbEpisodes, langua
       logoUrl =  imdb.getLogoFromImdb(imdbId);
     }
   }
-  imdbId = imdbId || remoteIds?.find(id => id.sourceName === 'IMDB')?.id 
  
   // Build releaseInfo in format "first_year-last_year" or "first_year-" for ongoing series
   let tvdbReleaseInfo = year || "";
@@ -1915,6 +1999,7 @@ async function buildTvdbSeriesResponse(stremioId, tvdbShow, tvdbEpisodes, langua
   }
 
   //console.log(tvdbShow.artworks?.find(a => a.type === 2)?.image);
+  logger.info(`[TvdbSeriesMeta] imdbId: ${imdbId}, stremioId: ${stremioId}`);
   const meta = {
     id: isAnime ? config.mal?.useImdbIdForCatalogAndSearch ? imdbId : stremioId : imdbId || stremioId,
     type: 'series',

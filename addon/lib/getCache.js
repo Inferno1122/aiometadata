@@ -388,7 +388,7 @@ async function cacheWrap(key, method, ttl, options = {}) {
   }
 
   const versionedKey = `v${ADDON_VERSION}:${key}`;
-  const { enableErrorCaching = true, resultClassifier = classifyResult, maxRetries = SELF_HEALING_CONFIG.maxRetries } = options;
+  const { enableErrorCaching = false, resultClassifier = classifyResult, maxRetries = SELF_HEALING_CONFIG.maxRetries } = options;
 
   if (inFlightRequests.has(versionedKey)) {
     return inFlightRequests.get(versionedKey);
@@ -536,7 +536,7 @@ async function cacheWrapGlobal(key, method, ttl, options = {}) {
   }
 
   const versionedKey = `global:${ADDON_VERSION}:${key}`;
-  const { enableErrorCaching = true, resultClassifier = classifyResult, maxRetries = SELF_HEALING_CONFIG.maxRetries } = options;
+  const { enableErrorCaching = false, resultClassifier = classifyResult, maxRetries = SELF_HEALING_CONFIG.maxRetries } = options;
   
   if (inFlightRequests.has(versionedKey)) {
     return inFlightRequests.get(versionedKey);
@@ -933,6 +933,12 @@ async function cacheWrapMeta(userUUID, metaId, method, ttl = META_TTL, options =
  * Caches individual components separately to prevent one bad component from affecting everything
  */
 async function cacheWrapMetaComponents(userUUID, metaId, method, ttl = META_TTL, options = {}, type = null) {
+   // Validate metaId
+   if (!metaId || typeof metaId !== 'string') {
+     cacheLogger.warn(`Invalid metaId provided to cacheWrapMetaComponents: ${metaId}`);
+     return { meta: null };
+   }
+   
    // Load config from database
    let config;
    try {
@@ -1180,6 +1186,12 @@ const metaConfigString = stableStringify(metaConfig);
  * @param {boolean} includeVideos - Whether videos component is required for this request
  */
 async function reconstructMetaFromComponents(userUUID, metaId, ttl = META_TTL, options = {}, type = null, includeVideos = true) {
+   // Validate metaId
+   if (!metaId || typeof metaId !== 'string') {
+     cacheLogger.warn(`Invalid metaId provided: ${metaId}`);
+     return { errorReason: 'invalid metaId' };
+   }
+   
    // Load config from database
    let config;
    try {
@@ -1297,6 +1309,8 @@ async function reconstructMetaFromComponents(userUUID, metaId, ttl = META_TTL, o
   const availableComponents = componentResults.filter(result => result.data !== null);
   
   if (availableComponents.length === 0) {
+    const metaReconstructionKey = `meta:reconstructed:${metaId}`;
+    updateCacheHealth(metaReconstructionKey, 'miss', true);
     return { errorReason: 'no cached components' };
   }
    
@@ -1336,7 +1350,6 @@ async function reconstructMetaFromComponents(userUUID, metaId, ttl = META_TTL, o
        reconstructedMeta.videos = data.videos;
      } else if (componentName === 'cast') {
        if (!reconstructedMeta.app_extras) reconstructedMeta.app_extras = {};
-       // Cast is only cached when castCount is unlimited, so use it directly
        reconstructedMeta.app_extras.cast = data.cast;
      } else if (componentName === 'director') {
        if (!reconstructedMeta.app_extras) reconstructedMeta.app_extras = {};
@@ -1357,6 +1370,8 @@ async function reconstructMetaFromComponents(userUUID, metaId, ttl = META_TTL, o
   // Validate the reconstructed meta
   if (!reconstructedMeta.id || !reconstructedMeta.name || !reconstructedMeta.type) {
     cacheLogger.warn(`Reconstructed meta missing required fields for ${metaId}`);
+    const metaReconstructionKey = `meta:reconstructed:${metaId}`;
+    updateCacheHealth(metaReconstructionKey, 'miss', true);
     return { errorReason: 'missing required fields' };
   }
   
@@ -1366,12 +1381,16 @@ async function reconstructMetaFromComponents(userUUID, metaId, ttl = META_TTL, o
     
     // If videos are required but not found in cache, fail the reconstruction
     if (!videosComponent) {
+      const metaReconstructionKey = `meta:reconstructed:${metaId}`;
+      updateCacheHealth(metaReconstructionKey, 'miss', true);
       return { errorReason: 'required videos component missing' };
     }
     
     // Also check if videos array is valid
     const videos = reconstructedMeta.videos;
     if (!videos || !Array.isArray(videos) || videos.length === 0) {
+      const metaReconstructionKey = `meta:reconstructed:${metaId}`;
+      updateCacheHealth(metaReconstructionKey, 'miss', true);
       return { errorReason: 'empty videos for series' };
     }
   }
@@ -1383,6 +1402,9 @@ async function reconstructMetaFromComponents(userUUID, metaId, ttl = META_TTL, o
   } catch (error) {
     cacheLogger.warn(`Failed to capture reconstructed metadata for dashboard: ${error.message}`);
   }
+  
+  const metaReconstructionKey = `meta:reconstructed:${metaId}`;
+  updateCacheHealth(metaReconstructionKey, 'hit', true);
   
   return { meta: reconstructedMeta };
 }
@@ -1403,15 +1425,31 @@ async function cacheWrapMetaSmart(userUUID, metaId, method, ttl = META_TTL, opti
     return reconstructedMeta;
   }
    
-  // If reconstruction failed, generate full meta by calling method
   const failureReason = reconstructedMeta && reconstructedMeta.errorReason ? ` (reason: ${reconstructedMeta.errorReason})` : '';
   cacheLogger.info(`Component reconstruction failed for ${metaId}, generating full meta${failureReason}`);
   
   const result = await method();
-  const meta = result?.meta || result;
   
-  // Cache the generated components with the resolved meta.id
-  return await cacheWrapMetaComponents(userUUID, meta.id || metaId, async () => result, ttl, options, type);
+  // Handle null/empty results
+  if (!result || !result.meta) {
+    cacheLogger.info(`Method returned null/empty result for ${metaId}`);
+    return { meta: null };
+  }
+  
+  const meta = result.meta;
+  let idToCache = meta.id;
+  
+  // Validate that we have a valid ID to cache
+  if (!idToCache || typeof idToCache !== 'string') {
+    cacheLogger.warn(`Invalid meta.id for caching: ${idToCache}, using original metaId: ${metaId}`);
+    idToCache = metaId;
+  }
+  
+  if(metaId.startsWith('tun_')){
+    idToCache = metaId;
+  }
+  
+  return await cacheWrapMetaComponents(userUUID, idToCache, async () => result, ttl, options, type);
 }
 
 /**
@@ -1423,8 +1461,6 @@ async function cacheComponent(cacheKey, componentData, ttl) {
   
   try {
     await redis.set(cacheKey, JSON.stringify(componentData), 'EX', ttl);
-    // Track as cache write (miss equivalent) since this is being cached
-    updateCacheHealth(cacheKey, 'miss', true);
   } catch (error) {
     cacheLogger.warn(`Failed to cache component for ${cacheKey}:`, error);
   }
@@ -1437,8 +1473,13 @@ async function cacheComponent(cacheKey, componentData, ttl) {
 async function cacheMetaComponent(userUUID, metaId, componentName, componentData, ttl = META_TTL, type = null) {
   if (!redis || !componentData) return;
   
+  // Validate metaId
+  if (!metaId || typeof metaId !== 'string') {
+    cacheLogger.warn(`Invalid metaId provided to cacheMetaComponent: ${metaId}`);
+    return;
+  }
+  
   try {
-    // Load config from database
     let config;
     try {
       config = await loadConfigFromDatabase(userUUID);
