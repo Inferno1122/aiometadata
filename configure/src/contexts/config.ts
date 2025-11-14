@@ -19,6 +19,8 @@ export interface CatalogConfig {
   genreSelection?: 'standard' | 'anime' | 'all';
   // Enable RPDB for this catalog (for poster enhancements)
   enableRPDB?: boolean;
+  // Randomize items within each page on every load
+  randomizePerPage?: boolean;
   // Page size for custom/StremThru catalogs (default: 100)
   pageSize?: number;
 }
@@ -84,6 +86,7 @@ export interface AppConfig {
     mdblist: string;
     customDescriptionBlurb?: string;
   };
+  mdblistWatchTracking: boolean;
   ageRating: string;
   sfw: boolean;
   hideUnreleasedDigital: boolean;

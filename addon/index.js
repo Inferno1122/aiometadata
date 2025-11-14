@@ -52,9 +52,19 @@ const { getFavorites, getWatchList } = require("./lib/getPersonalLists");
 const { blurImage } = require('./utils/imageProcessor');
 const axios = require('axios');
 const jikan = require('./lib/mal');
+const tvmaze = require('./lib/tvmaze');
 const packageJson = require('../package.json');
 const ADDON_VERSION = packageJson.version;
 const sharp = require('sharp');
+
+function shuffleMetas(metas = []) {
+  const shuffled = Array.isArray(metas) ? metas.slice() : [];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
 
 // Parse JSON and URL-encoded bodies for API routes
 addon.use(express.json({ limit: '2mb' }));
@@ -249,25 +259,28 @@ const respond = function (req, res, data, opts) {
   res.send(data);
 };
 
-addon.get("/api/config", (req, res) => {
-  const publicEnvConfig = {
-    tmdb: process.env.TMDB_API || "",
-    tvdb: process.env.TVDB_API_KEY || "",
-    fanart: process.env.FANART_API_KEY || "",
-    rpdb: process.env.RPDB_API_KEY || "",
-    mdblist: process.env.MDBLIST_API_KEY || "",
-    gemini: process.env.GEMINI_API_KEY || "",
-    customDescriptionBlurb: process.env.CUSTOM_DESCRIPTION_BLURB || "",
-    addonVersion: ADDON_VERSION,
-    hasBuiltInTvdb: !!(process.env.BUILT_IN_TVDB_API_KEY),
-    hasBuiltInTmdb: !!(process.env.BUILT_IN_TMDB_API_KEY),
-    catalogTTL: parseInt(process.env.CATALOG_TTL || 24 * 60 * 60, 10), // Default to 24 hours
-  };
-  
-  res.setHeader('Cache-Control', 'private, max-age=300');
-  
-  res.json(publicEnvConfig);
-});
+  addon.get("/api/config", (req, res) => {
+    const publicEnvConfig = {
+      tmdb: process.env.TMDB_API || "",
+      tvdb: process.env.TVDB_API_KEY || "",
+      fanart: process.env.FANART_API_KEY || "",
+      rpdb: process.env.RPDB_API_KEY || "",
+      mdblist: process.env.MDBLIST_API_KEY || "",
+      gemini: process.env.GEMINI_API_KEY || "",
+      customDescriptionBlurb: process.env.CUSTOM_DESCRIPTION_BLURB || "",
+      addonVersion: ADDON_VERSION,
+      hasBuiltInTvdb: !!(process.env.BUILT_IN_TVDB_API_KEY),
+      hasBuiltInTmdb: !!(process.env.BUILT_IN_TMDB_API_KEY),
+      catalogTTL: parseInt(process.env.CATALOG_TTL || 24 * 60 * 60, 10), // Default to 24 hours
+    };
+    
+    // No cache to prevent cross-instance contamination
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    res.json(publicEnvConfig);
+  });
 
 // --- Configuration Database API Routes ---
 addon.post("/api/config/save", configApi.saveConfig.bind(configApi));
@@ -561,6 +574,13 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
   );
   const actualType = catalogConfig ? catalogConfig.type : type;
   
+  const hasRpdbKey =
+    (config.apiKeys?.rpdb && config.apiKeys.rpdb.trim().length > 0);
+
+  if (catalogConfig && !hasRpdbKey) {
+    catalogConfig.enableRPDB = false;
+  }
+
   console.log(`[CATALOG ROUTE] catalogConfig:`, JSON.stringify(catalogConfig));
   console.log(`[CATALOG ROUTE] enableRPDB value:`, catalogConfig?.enableRPDB, `(type: ${typeof catalogConfig?.enableRPDB})`);
   
@@ -584,7 +604,26 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
   }
   const cacheWrapper = cacheWrapCatalog;
 
-  const catalogKey = `${id}:${actualType}:${stableStringify(extraArgs || {})}`;
+  extraArgs = extraArgs || {};
+  if (id === 'tvmaze.schedule') {
+    // Format date in user's local timezone
+    // Uses server's local timezone (better than UTC for most users)
+    // If a timezone header is provided, we could use that, but Stremio doesn't send it
+    const getLocalDateString = () => {
+      const now = new Date();
+      // Get local date components (not UTC) - uses server's timezone
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+    
+    const dateString = extraArgs.date || getLocalDateString();
+    extraArgs.date = dateString;
+    extraArgs.genre = !extraArgs.genre || extraArgs.genre === 'None' ? '' : extraArgs.genre.toUpperCase();
+  }
+
+  const catalogKey = `${id}:${actualType}:${stableStringify(extraArgs)}`;
   
   const cacheOptions = {
     enableErrorCaching: true,
@@ -623,7 +662,7 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
         let metas = [];
         const { genre: genreName, type_filter,  skip } = extraArgs;
         const pageSize = id.includes(`mal.`) ? 25 : 
-                         (id.startsWith('stremthru.') || id.startsWith('mdblist.') || id.startsWith('custom.')) ? 
+                         (id.startsWith('stremthru.') || id.startsWith('mdblist.') || id.startsWith('custom.') || (id.startsWith('tvdb.') && !id.startsWith('tvdb.collection.'))) ? 
                          parseInt(process.env.CATALOG_LIST_ITEMS_SIZE || '20') : 20;
         const page = skip ? Math.floor(parseInt(skip) / pageSize) + 1 : 1;
         const args = [actualType, language, page];
@@ -724,6 +763,62 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
             }
             break;
           }
+          case 'tvmaze.schedule': {
+            const scheduleDate = extraArgs.date;
+            const scheduleCountry = extraArgs.genre;
+            const scheduleEntries = await tvmaze.getFullSchedule(scheduleDate, scheduleCountry);
+
+            if (!Array.isArray(scheduleEntries) || scheduleEntries.length === 0) {
+              metas = [];
+              break;
+            }
+
+            const stripHtml = (text) => text ? text.replace(/<[^>]*>?/gm, '') : '';
+
+            // Filter out news shows
+            const filteredEntries = scheduleEntries.filter(entry => {
+              const showType = entry?.show?.type;
+              return showType && showType.toLowerCase() !== 'news' && showType.toLowerCase() !== 'talk show';
+            });
+
+            const uniqueByShow = new Map();
+            for (const entry of filteredEntries) {
+              const showId = entry?.show?.id;
+              if (!showId || uniqueByShow.has(showId)) continue;
+              uniqueByShow.set(showId, entry);
+            }
+
+            const dedupedEntries = Array.from(uniqueByShow.values()).sort((a, b) => {
+              const timeA = a?.airstamp ? new Date(a.airstamp).getTime() : 0;
+              const timeB = b?.airstamp ? new Date(b.airstamp).getTime() : 0;
+              return timeA - timeB;
+            });
+
+            const metasFromSchedule = await Promise.all(dedupedEntries.map(async (entry) => {
+              const show = entry?.show;
+              if (!show?.id) return null;
+
+              const stremioId = `tvmaze:${show.id}`;
+              let meta;
+
+              try {
+                const result = await cacheWrapMetaSmart(userUUID, stremioId, async () => {
+                  return await getMeta('series', language, stremioId, config, userUUID, true);
+                }, undefined, { enableErrorCaching: true, maxRetries: 2 }, 'series', true);
+
+                meta = result?.meta;
+              } catch (error) {
+                consola.warn(`[Catalog Route] Failed to fetch meta for schedule entry ${stremioId}: ${error.message}`);
+              }
+              return meta;
+            }));
+
+            const validScheduleMetas = metasFromSchedule.filter(Boolean);
+            const startIndex = (page - 1) * pageSize;
+            const endIndex = startIndex + pageSize;
+            metas = validScheduleMetas.slice(startIndex, endIndex);
+            break;
+          }
           case 'mal.genres': {
             const mediaType = type_filter || 'series';
             const allAnimeGenres = await cacheWrapJikanApi('anime-genres', async () => {
@@ -809,6 +904,13 @@ addon.get("/stremio/:userUUID/catalog/:type/:id/:extra?.json", async function (r
     }, undefined, cacheOptions);
     }
     
+    if (catalogConfig?.randomizePerPage && Array.isArray(responseData?.metas) && responseData.metas.length > 1) {
+      responseData = {
+        ...responseData,
+        metas: shuffleMetas(responseData.metas)
+      };
+    }
+
     const httpCacheOpts = { cacheMaxAge: 0, staleRevalidate: 5 * 60 }; // No cache for regular catalogs, 5 min stale-while-revalidate
     respond(req, res, responseData, httpCacheOpts);
 
@@ -932,7 +1034,51 @@ addon.get("/stremio/:userUUID/meta/:type/:id.json", async function (req, res) {
   }
 });
 
-
+// --- Subtitle Route (for watch tracking) ---
+// Route pattern matches Stremio's subtitle URL format: /:id/:extra?.json
+// where extra contains filename, videoSize, and videoHash parameters
+addon.get("/stremio/:userUUID/subtitles/:type/:id/:extra?.json", async function (req, res) {
+  const { userUUID, type, id } = req.params;
+  
+  // Debug logging for all watch tracking attempts with media ID and user UUID
+  consola.debug(`[Watch Tracking] Subtitle route matched - userUUID: ${userUUID}, type: ${type}, id: ${id}, extra: ${req.params.extra || 'none'}`);
+  
+  try {
+    // Load config from database
+    const config = await loadConfigFromDatabase(userUUID);
+    if (!config) {
+      consola.debug(`[Watch Tracking] No config found for user: ${userUUID}`);
+      // Use Promise.resolve() for immediate response
+      return respond(req, res, { subtitles: [] }, { cacheMaxAge: 0 });
+    }
+    
+    // Check if watch tracking is enabled and MDBList API key exists
+    const hasApiKey = config?.apiKeys?.mdblist;
+    const trackingEnabled = !!config?.mdblistWatchTracking;
+    
+    if (hasApiKey && trackingEnabled) {
+      // Import and call subtitle handler
+      const { handleSubtitleRequest } = require('./lib/subtitleHandler');
+      
+      // Call handler synchronously (no await)
+      const result = handleSubtitleRequest(type, id, config, userUUID);
+      
+      // Return empty subtitle response immediately
+      return respond(req, res, result, { cacheMaxAge: 0 });
+    } else {
+      // Watch tracking disabled or no API key - return empty subtitles
+      consola.debug(`[Watch Tracking] Skipped for user ${userUUID} - hasApiKey: ${!!hasApiKey}, trackingEnabled: ${trackingEnabled}`);
+      return respond(req, res, { subtitles: [] }, { cacheMaxAge: 0 });
+    }
+  } catch (error) {
+    consola.error(`[Watch Tracking] Subtitle route error - userUUID: ${userUUID}, type: ${type}, id: ${id}, error: ${error.message}`, {
+      stack: error.stack,
+      extra: req.params.extra
+    });
+    
+    return respond(req, res, { subtitles: [] }, { cacheMaxAge: 0 });
+  }
+});
 
 // Proxy endpoint for fetching manifests from internal Docker network URLs
 addon.get("/api/proxy-manifest", async function (req, res) {
@@ -1133,9 +1279,13 @@ addon.get('/resize-image', async function (req, res) {
 
 
 // Support Stremio settings opening under /stremio/:uuid/:config/configure
-addon.get('/stremio/:userUUID/configure', function (req, res) {
-  res.sendFile(path.join(__dirname, '../dist/index.html'));
-});
+  addon.get('/stremio/:userUUID/configure', function (req, res) {
+    // No cache to prevent cross-instance contamination
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.sendFile(path.join(__dirname, '../dist/index.html'));
+  });
 
 addon.use(favicon(path.join(__dirname, '../public/favicon.png')));
 addon.use('/configure', express.static(path.join(__dirname, '../dist')));

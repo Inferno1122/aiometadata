@@ -5,6 +5,7 @@ const jikan = require('./mal');
 const database = require('./database');
 const redis = require('./redisClient');
 const consola = require('consola');
+const packageJson = require('../../package.json');
 
 const logger = consola.create({
   defaults: {
@@ -34,7 +35,8 @@ const WARMUP_CONFIG = {
   quietHoursEnabled: process.env.CATALOG_WARMUP_QUIET_HOURS_ENABLED === 'true',
   quietHoursRange: process.env.CATALOG_WARMUP_QUIET_HOURS || '02:00-06:00',
   taskDelayMs: parseInt(process.env.CATALOG_WARMUP_TASK_DELAY_MS) || 100,
-  logLevel: process.env.CATALOG_WARMUP_LOG_LEVEL || 'info'
+  logLevel: process.env.CATALOG_WARMUP_LOG_LEVEL || 'info',
+  autoOnVersionChange: process.env.CATALOG_WARMUP_AUTO_ON_VERSION_CHANGE === 'true'
 };
 
 // Stats tracking - now supports multiple UUIDs
@@ -170,13 +172,14 @@ class ComprehensiveCatalogWarmer {
     }
   }
 
-  async markWarmed(uuid) {
+  async markWarmed(uuid, runStartedAt = null) {
     try {
       const lastWarmupKey = `catalog-warmup:last-run:${uuid}`;
       const statsKey = `catalog-warmup:stats:${uuid}`;
+      const recordedStart = typeof runStartedAt === 'number' ? runStartedAt : Date.now();
       
       // Save timestamp for this specific UUID
-      await redis.set(lastWarmupKey, Date.now().toString());
+      await redis.set(lastWarmupKey, recordedStart.toString());
       
       // Save stats for this UUID
       await redis.set(statsKey, JSON.stringify({
@@ -188,7 +191,7 @@ class ComprehensiveCatalogWarmer {
         errors: this.stats.uuidStats[uuid]?.errors || []
       }));
       
-      const nextRunTime = Date.now() + (this.config.intervalHours * 60 * 60 * 1000);
+      const nextRunTime = recordedStart + (this.config.intervalHours * 60 * 60 * 1000);
       this.stats.nextRun = new Date(nextRunTime).toISOString();
       this.log('debug', `Marked warmup complete for UUID ${uuid}, next run: ${this.formatNextRunTime(nextRunTime)}`);
     } catch (error) {
@@ -565,7 +568,7 @@ class ComprehensiveCatalogWarmer {
           this.stats.uuidStats[uuid].duration = `${Math.floor(uuidDuration / 60000)}m ${Math.floor((uuidDuration % 60000) / 1000)}s`;
 
           // Mark this UUID as complete
-          await this.markWarmed(uuid);
+          await this.markWarmed(uuid, uuidStartTime);
 
           // Update overall stats
           this.stats.totalCatalogs += this.stats.uuidStats[uuid].totalCatalogs;
@@ -584,13 +587,13 @@ class ComprehensiveCatalogWarmer {
       // Calculate overall duration
       const overallDuration = Date.now() - startTime;
       this.stats.duration = `${Math.floor(overallDuration / 60000)}m ${Math.floor((overallDuration % 60000) / 1000)}s`;
-      this.stats.lastRun = new Date().toISOString();
+      this.stats.lastRun = new Date(startTime).toISOString();
 
       this.log('success', `Warmup complete! Processed ${this.config.uuids.length} UUID(s), warmed ${this.stats.catalogsWarmed}/${this.stats.totalCatalogs} catalogs, ${this.stats.totalPages} pages, ${this.stats.totalItems} items in ${this.stats.duration}`);
       
       // Update nextRun time after successful warmup (for both scheduled and forced runs)
       const intervalMs = this.config.intervalHours * 60 * 60 * 1000;
-      const nextRunTime = Date.now() + intervalMs;
+      const nextRunTime = startTime + intervalMs;
       this.stats.nextRun = new Date(nextRunTime).toISOString();
       this.log('info', `Next warmup scheduled for ${this.formatNextRunTime(nextRunTime)}`);
       
@@ -602,6 +605,43 @@ class ComprehensiveCatalogWarmer {
     } finally {
       this.isRunning = false;
       this.stats.isRunning = false;
+    }
+  }
+
+  async checkVersionAndWarmIfNeeded() {
+    if (!this.config.autoOnVersionChange) {
+      return false;
+    }
+
+    const currentVersion = packageJson.version;
+    const versionKey = 'catalog-warmup:last-version';
+    
+    try {
+      const lastVersion = await redis.get(versionKey);
+      
+      if (lastVersion && lastVersion !== currentVersion) {
+        this.log('success', `App version changed from ${lastVersion} to ${currentVersion} - triggering automatic warmup`);
+        // Run warmup immediately (force=true bypasses interval checks)
+        const warmupCompleted = await this.runWarmup(true);
+        
+        if (warmupCompleted) {
+          // Store new version after successful warmup
+          await redis.set(versionKey, currentVersion);
+          this.log('success', `Version change warmup completed. Updated stored version to ${currentVersion}`);
+          return true;
+        } else {
+          this.log('warn', 'Version change warmup was skipped or failed');
+          return false;
+        }
+      } else if (!lastVersion) {
+        await redis.set(versionKey, currentVersion);
+        this.log('info', `Storing initial app version: ${currentVersion}`);
+      }
+      
+      return false;
+    } catch (error) {
+      this.log('error', `Error checking version: ${error.message}`);
+      return false;
     }
   }
 
@@ -620,7 +660,14 @@ class ComprehensiveCatalogWarmer {
 
     this.log('success', `Comprehensive catalog warming enabled for ${this.config.uuids.length} UUID(s): ${this.config.uuids.join(', ')}`);
     this.log('info', `Mode: ${WARMUP_MODE}, Interval: ${this.config.intervalHours}h, Initial delay: ${this.config.initialDelaySeconds}s`);
+    
+    if (this.config.autoOnVersionChange) {
+      this.log('info', 'Auto-warmup on version change: enabled');
+    }
 
+    const versionWarmupRan = await this.checkVersionAndWarmIfNeeded();
+    
+    // If version warmup ran, we still want to schedule the next regular warmup
     // Calculate next run time based on the earliest UUID that needs warming
     let earliestNextRun = null;
     for (const uuid of this.config.uuids) {
@@ -640,8 +687,9 @@ class ComprehensiveCatalogWarmer {
       this.stats.nextRun = new Date(earliestNextRun).toISOString();
     }
 
-    // Initial delay
-    await this.delay(this.config.initialDelaySeconds * 1000);
+    if (!versionWarmupRan) {
+      await this.delay(this.config.initialDelaySeconds * 1000);
+    }
 
     // Schedule warmup with proper sequencing
     await this.scheduleNextWarmup();

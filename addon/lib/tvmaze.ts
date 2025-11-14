@@ -240,6 +240,12 @@ interface ApiError {
   error?: boolean;
 }
 
+interface TVmazeScheduleEntry extends TVmazeEpisode {
+  _embedded?: {
+    show?: TVmazeShow;
+  };
+}
+
 /**
  * Sleep function for retry delays
  */
@@ -484,6 +490,33 @@ async function getPersonCastCredits(personId: number): Promise<TVmazeCastCredit[
   });
 }
 
+/**
+ * Fetches the web channel schedule for a specific date and country.
+ */
+async function getFullSchedule(date: string, country: string): Promise<TVmazeScheduleEntry[]> {
+  // Check if country is null, undefined, or empty string
+  const hasCountry = country != null && country.trim().length > 0;
+  const normalizedCountry = hasCountry ? country.trim() : 'default';
+  const cacheKey = `schedule-full:${normalizedCountry}:${date}`;
+  console.log(`getFullSchedule: ${cacheKey}`);
+
+  return cacheWrapTvmazeApi(cacheKey, async () => {
+    // Only include country parameter if it's provided and non-empty
+    const url = hasCountry 
+      ? `${TVMAZE_API_URL}/schedule?date=${date}&country=${normalizedCountry}`
+      : `${TVMAZE_API_URL}/schedule?date=${date}`;
+    const context = hasCountry 
+      ? `getFullSchedule for ${normalizedCountry} on ${date}`
+      : `getFullSchedule on ${date}`;
+    console.log(`getFullSchedule: ${url}`);
+
+    return await retryApiCall(async () => {
+      const response = await httpGet(url, DEFAULT_HTTP_CONFIG);
+      return response.data;
+    }, context) || [];
+  });
+}
+
 export {
   getShowByImdbId,
   getShowDetails,
@@ -492,7 +525,8 @@ export {
   searchShows,
   searchPeople,
   getPersonCastCredits,
-  getShowById
+  getShowById,
+  getFullSchedule
 };
 
 // CommonJS compatibility
@@ -504,5 +538,6 @@ module.exports = {
   searchShows,
   searchPeople,
   getPersonCastCredits,
-  getShowById
+  getShowById,
+  getFullSchedule
 };

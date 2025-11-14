@@ -21,6 +21,16 @@ const logger = consola.create({
   tag: 'MDBList'
 });
 
+/**
+ * Sanitize URL by removing API key for safe logging
+ * @param {string} url - URL that may contain an API key
+ * @returns {string} - Sanitized URL with API key replaced by [REDACTED]
+ */
+function sanitizeUrlForLogging(url: string): string {
+  // Replace API key in query string with [REDACTED]
+  return url.replace(/([?&]apikey=)[^&]+/gi, '$1[REDACTED]');
+}
+
 // Proxy configuration for MDBList requests
 const MDBLIST_SOCKS_PROXY_URL = process.env.MDBLIST_SOCKS_PROXY_URL;
 let mdblistDispatcher;
@@ -223,8 +233,8 @@ async function fetchMDBListItems(listId: string, apiKey: string, language: strin
       url += `&filter_genre=${genre}`;
     }
     
-    // Log the final URL for debugging
-    logger.debug(`MDBList request URL: ${url}`);
+    // Log the final URL for debugging (with API key sanitized)
+    logger.debug(`MDBList request URL: ${sanitizeUrlForLogging(url)}`);
     
     const response: any = await makeRateLimitedRequest(
       () => httpGet(url, { dispatcher: mdblistDispatcher }),
@@ -573,5 +583,257 @@ function convertGenreToSlug(genre: string): string {
   return genre;
 }
 
-export { fetchMDBListItems, fetchMDBListBatchMediaInfo, getGenresFromMDBList, parseMDBListItems, getMediaRatingFromMDBList, fetchMDBListGenres, convertGenreToSlug };
+type MovieIdInput =
+  | string
+  | {
+      imdb?: string;
+      tmdb?: number | string;
+      trakt?: number | string;
+      kitsu?: number | string;
+    };
+
+type EpisodeIdInput =
+  | string
+  | {
+      imdb?: string;
+      tmdb?: number | string;
+      trakt?: number | string;
+      tvdb?: number | string;
+    };
+
+function formatIdSummary(ids: Record<string, string | number>) {
+  return Object.entries(ids)
+    .map(([key, value]) => `${key}:${value}`)
+    .join(', ');
+}
+
+function toOptionalNumber(value: number | string | undefined) {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeMovieIdInput(input: MovieIdInput | null | undefined) {
+  if (!input) return null;
+
+  const ids: Record<string, string | number> = {};
+
+  if (typeof input === 'string') {
+    if (input.startsWith('tt')) {
+      ids.imdb = input;
+      return ids;
+    }
+    const [prefix, value] = input.split(':');
+    if (prefix && value) {
+      ids[prefix] = /^\d+$/.test(value) ? Number(value) : value;
+      return ids;
+    }
+    return null;
+  }
+
+  if (input.imdb) ids.imdb = input.imdb;
+  const tmdb = toOptionalNumber(input.tmdb);
+  if (tmdb !== undefined) ids.tmdb = tmdb;
+  const trakt = toOptionalNumber(input.trakt);
+  if (trakt !== undefined) ids.trakt = trakt;
+  const kitsu = toOptionalNumber(input.kitsu);
+  if (kitsu !== undefined) ids.kitsu = kitsu;
+
+  return Object.keys(ids).length > 0 ? ids : null;
+}
+
+function normalizeEpisodeIdInput(input: EpisodeIdInput | null | undefined) {
+  if (!input) return null;
+
+  const ids: Record<string, string | number> = {};
+
+  if (typeof input === 'string') {
+    if (input.startsWith('tt')) {
+      ids.imdb = input;
+      return ids;
+    }
+    const [prefix, value] = input.split(':');
+    if (prefix && value) {
+      ids[prefix] = /^\d+$/.test(value) ? Number(value) : value;
+      return ids;
+    }
+    return null;
+  }
+
+  if (input.imdb) ids.imdb = input.imdb;
+  const tmdb = toOptionalNumber(input.tmdb);
+  if (tmdb !== undefined) ids.tmdb = tmdb;
+  const trakt = toOptionalNumber(input.trakt);
+  if (trakt !== undefined) ids.trakt = trakt;
+  const tvdb = toOptionalNumber(input.tvdb);
+  if (tvdb !== undefined) ids.tvdb = tvdb;
+
+  return Object.keys(ids).length > 0 ? ids : null;
+}
+
+async function markMovieAsWatched(idInput: MovieIdInput, apiKey: string): Promise<boolean> {
+  const normalizedIds = normalizeMovieIdInput(idInput);
+
+  if (!normalizedIds || !apiKey) {
+    logger.debug('[Watch Tracking] Missing ID or API key for markMovieAsWatched', {
+      id: idInput,
+      hasApiKey: !!apiKey
+    });
+    return false;
+  }
+
+  try {
+    const url = `https://api.mdblist.com/sync/watched?apikey=${apiKey}`;
+    const watchedAt = new Date().toISOString();
+
+    const payload = {
+      movies: [
+        {
+          ids: normalizedIds,
+          watched_at: watchedAt
+        }
+      ]
+    };
+
+    logger.debug(
+      `[Watch Tracking] Marking movie as watched - ids: ${formatIdSummary(normalizedIds)}, timestamp: ${watchedAt}`
+    );
+
+    await makeRateLimitedRequest(
+      () =>
+        httpPost(url, payload, {
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000,
+          dispatcher: mdblistDispatcher
+        }),
+      `MDBList markMovieAsWatched (${formatIdSummary(normalizedIds)})`
+    );
+
+    logger.info('[Watch Tracking] Movie marked as watched', {
+      ids: normalizedIds
+    });
+    return true;
+  } catch (error: any) {
+    logger.error(
+      `[Watch Tracking] Failed to mark movie as watched - ids: ${formatIdSummary(normalizedIds)}, error: ${error.message}`,
+      {
+        stack: error.stack
+      }
+    );
+
+    if (error.response) {
+      logger.error(
+        `[Watch Tracking] MDBList API error response - status: ${error.response.status}, statusText: ${
+          error.response.statusText || 'N/A'
+        }`,
+        {
+          responseData: error.response.data,
+          headers: error.response.headers
+        }
+      );
+    } else if (error.code) {
+      logger.error(`[Watch Tracking] Network error - code: ${error.code}`, {
+        errno: error.errno,
+        syscall: error.syscall
+      });
+    }
+
+    return false;
+  }
+}
+
+async function markEpisodeAsWatched(
+  idInput: EpisodeIdInput,
+  season: number,
+  episode: number,
+  apiKey: string
+): Promise<boolean> {
+  const normalizedIds = normalizeEpisodeIdInput(idInput);
+
+  if (!normalizedIds || !apiKey || season < 1 || episode < 1) {
+    logger.warn('[Watch Tracking] Invalid parameters for markEpisodeAsWatched', {
+      id: idInput,
+      season,
+      episode,
+      hasApiKey: !!apiKey
+    });
+    return false;
+  }
+
+  try {
+    const url = `https://api.mdblist.com/sync/watched?apikey=${apiKey}`;
+    const watchedAt = new Date().toISOString();
+
+    const payload = {
+      shows: [
+        {
+          ids: normalizedIds,
+          seasons: [
+            {
+              number: season,
+              episodes: [
+                {
+                  number: episode,
+                  watched_at: watchedAt
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+
+    logger.debug(
+      `[Watch Tracking] Marking episode as watched - ids: ${formatIdSummary(normalizedIds)}, S${season}E${episode}, timestamp: ${watchedAt}`
+    );
+
+    await makeRateLimitedRequest(
+      () =>
+        httpPost(url, payload, {
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000,
+          dispatcher: mdblistDispatcher
+        }),
+      `MDBList markEpisodeAsWatched (${formatIdSummary(normalizedIds)}, S${season}E${episode})`
+    );
+
+    logger.info('[Watch Tracking] Episode marked as watched', {
+      ids: normalizedIds,
+      season,
+      episode
+    });
+    return true;
+  } catch (error: any) {
+    logger.error(
+      `[Watch Tracking] Failed to mark episode as watched - ids: ${formatIdSummary(normalizedIds)}, S${season}E${episode}, error: ${error.message}`,
+      {
+        stack: error.stack
+      }
+    );
+
+    if (error.response) {
+      logger.error(
+        `[Watch Tracking] MDBList API error response - status: ${error.response.status}, statusText: ${error.response.statusText || 'N/A'}`,
+        {
+          responseData: error.response.data,
+          headers: error.response.headers
+        }
+      );
+    } else if (error.code) {
+      logger.error(`[Watch Tracking] Network error - code: ${error.code}`, {
+        errno: error.errno,
+        syscall: error.syscall
+      });
+    }
+
+    return false;
+  }
+}
+
+export { fetchMDBListItems, fetchMDBListBatchMediaInfo, getGenresFromMDBList, parseMDBListItems, getMediaRatingFromMDBList, fetchMDBListGenres, convertGenreToSlug, markMovieAsWatched, markEpisodeAsWatched };
 

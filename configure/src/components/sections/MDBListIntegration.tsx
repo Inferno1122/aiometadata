@@ -777,6 +777,7 @@ export function MDBListIntegration({ isOpen, onClose }: MDBListIntegrationProps)
               </CardContent>
             </Card>
           )}
+
           {/* Custom User Lists Section */}
           {isValid && (
             <Card>
